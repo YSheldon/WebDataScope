@@ -105,7 +105,7 @@ export async function runLlmText({ systemPrompt, userPrompt, taskName = 'result'
     return runLlmTextWithConfig(config, { systemPrompt, userPrompt, taskName });
 }
 
-async function requestChatCompletion(config, payload) {
+async function requestChatCompletion(config, payload, timeoutMs = 0) {
     const headers = {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -118,6 +118,7 @@ async function requestChatCompletion(config, payload) {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
+        ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
 
     const data = await response.json().catch(() => ({}));
@@ -137,7 +138,7 @@ async function testLlmConfig(config) {
         messages: [
             { role: 'user', content: 'Reply with exactly: ok' },
         ],
-    });
+    }, 20000);
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) {
         throw new Error('LLM connectivity check returned an empty response.');

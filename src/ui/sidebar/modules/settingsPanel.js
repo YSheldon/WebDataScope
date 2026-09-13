@@ -127,10 +127,18 @@ export async function initSettingsPanel() {
     bindLlmApiKeyPlaceholder();
     document.getElementById(ids.testLlm).addEventListener('click', async () => {
         const testBtn = document.getElementById(ids.testLlm);
+        const inlineStatus = document.getElementById('llmTestStatus');
+        const show = (message, mode) => {
+            if (inlineStatus) {
+                inlineStatus.textContent = message;
+                inlineStatus.style.color = mode === 'error' ? '#d9534f' : '#2e7d32';
+            }
+            setStatus(message, mode);
+        };
         const llmConfig = readLlmConfigFromForm();
         testBtn.disabled = true;
+        show('正在测试 AI 连接...', '');
         try {
-            setStatus('正在测试 AI 连接...');
             const result = await sendMessage('WQP_LLM_CONFIG_TEST', {
                 config: {
                     baseUrl: llmConfig.baseUrl,
@@ -138,9 +146,9 @@ export async function initSettingsPanel() {
                     apiKey: llmConfig.apiKey,
                 },
             });
-            setStatus(`AI 连接成功：${result?.model || llmConfig.model || '未知模型'}`, 'success');
+            show(`AI 连接成功：${result?.model || llmConfig.model || '未知模型'}`, 'success');
         } catch (error) {
-            setStatus(`AI 连接失败：${error.message}`, 'error');
+            show(`AI 连接失败：${error.message}`, 'error');
         } finally {
             testBtn.disabled = false;
         }

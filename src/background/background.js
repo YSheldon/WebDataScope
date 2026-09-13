@@ -4,7 +4,7 @@ import '../shared/dataStore.js';
 import { ensureDefaultSettings } from './services/settingsService.js';
 import './services/sidebarMessageRouter.js';
 import { initSessionKeeperService } from './services/sessionKeeperService.js';
-import { initTelemetryService } from './services/telemetryService.js';
+// import { initTelemetryService } from './services/telemetryService.js';
 
 const DATA_SET_LIST_PATH = 'dataSetList.json';
 const PATHS = {
@@ -171,7 +171,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 configureSidePanel();
 initSessionKeeperService();
-initTelemetryService();
+// initTelemetryService(); // 已禁用:不向 webdatascope-telemetry.zkhweb.workers.dev 上报任何数据
 
 
 

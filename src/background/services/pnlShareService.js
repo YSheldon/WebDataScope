@@ -678,6 +678,9 @@ export async function getShareStatus() {
 }
 
 export async function uploadSharedData() {
+    // 已禁用:按用户要求不上传任何数据到 pnl-share.hualabtech.com(下载他人共享不受影响)
+    throw new Error('共享上传功能已在本机禁用(不上传数据)。');
+    /* eslint-disable no-unreachable */
     postUploadProgress({ phase: 'preparing', current: 0, total: 0, percent: 0, message: '正在准备共享上传…' });
     const settings = await getSettings();
     if (settings.pnlShareEnabled !== true) throw new Error('请先在设置中开启 PNL / Prod Corr 共享。');

@@ -1,9 +1,0 @@
-.alpha_distribution {
-    display: flex;
-    flex-wrap: wrap; /* 允许内容换行 */
-}
-.alpha_distribution .canvas {
-    width: 50%;
-    height: 400px; 
-    margin: 0px;
-}

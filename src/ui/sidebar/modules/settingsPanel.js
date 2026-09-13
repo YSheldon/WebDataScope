@@ -14,6 +14,7 @@ const ids = {
     llmBaseUrl: 'llmBaseUrl',
     llmModel: 'llmModel',
     llmApiKey: 'llmApiKey',
+    testLlm: 'testLlmBtn',
     save: 'saveSettingsBtn',
 };
 
@@ -124,6 +125,26 @@ export async function initSettingsPanel() {
     const importDataZipBtn = document.getElementById('importDataZipBtn');
     const importDataZipFile = document.getElementById('importDataZipFile');
     bindLlmApiKeyPlaceholder();
+    document.getElementById(ids.testLlm).addEventListener('click', async () => {
+        const testBtn = document.getElementById(ids.testLlm);
+        const llmConfig = readLlmConfigFromForm();
+        testBtn.disabled = true;
+        try {
+            setStatus('正在测试 AI 连接...');
+            const result = await sendMessage('WQP_LLM_CONFIG_TEST', {
+                config: {
+                    baseUrl: llmConfig.baseUrl,
+                    model: llmConfig.model,
+                    apiKey: llmConfig.apiKey,
+                },
+            });
+            setStatus(`AI 连接成功：${result?.model || llmConfig.model || '未知模型'}`, 'success');
+        } catch (error) {
+            setStatus(`AI 连接失败：${error.message}`, 'error');
+        } finally {
+            testBtn.disabled = false;
+        }
+    });
 
     importDataZipBtn.addEventListener('click', () => {
         importDataZipFile.value = '';

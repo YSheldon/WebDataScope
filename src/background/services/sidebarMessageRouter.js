@@ -6,7 +6,7 @@ import {
     markCommunityPostRead,
     setCommunityPostFavorite,
 } from './communityPostMarkerService.js';
-import { getLlmConfig, saveLlmConfig } from './llmService.js';
+import { getLlmConfig, saveLlmConfig, testLlmConnection } from './llmService.js';
 import {
     clearProdMemoCache,
     clearProdMemoSyncData,
@@ -96,6 +96,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === 'WQP_LLM_CONFIG_SAVE') {
         return respond(sendResponse, saveLlmConfig(msg.config));
+    }
+    if (msg.type === 'WQP_LLM_CONFIG_TEST') {
+        return respond(sendResponse, testLlmConnection(msg.config || {}));
     }
     if (msg.type === 'WQP_ALPHA_AI_GENERATE_DESCRIPTION') {
         return respond(sendResponse, generateAlphaDescriptionWithAi({

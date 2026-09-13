@@ -78,6 +78,19 @@ function extractJsonObject(text) {
     }
 }
 
+export async function testLlmConnection(input = {}) {
+    const existing = await getLlmConfigRaw();
+    const config = {
+        baseUrl: normalizeBaseUrl(input.baseUrl),
+        model: String(input.model || '').trim(),
+        apiKey: (typeof input.apiKey === 'string' && input.apiKey && input.apiKey !== '********')
+            ? input.apiKey
+            : existing.apiKey,
+    };
+    await testLlmConfig(config);
+    return { ok: true, model: config.model };
+}
+
 export async function runLlmJson({ systemPrompt, userPrompt, schemaName = 'result' }) {
     const config = await getLlmConfigRaw();
     if (!config.enabled) throw new Error('AI is disabled. Please enable AI in the extension side panel.');

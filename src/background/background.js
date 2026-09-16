@@ -773,6 +773,7 @@ function injectionGeniusScript(tabId) {
                         `${PATHS.vendorJs}/buttons.html5.min.js`,
                         `${PATHS.sharedContent}/utils.js`,
                         `${PATHS.sharedContent}/uiCard.js`,
+                        `${PATHS.platformGenius}/sixDimRank.js`,
                         `${PATHS.platformGenius}/genius.js`,
                     ],
                 });

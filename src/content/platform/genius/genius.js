@@ -455,6 +455,32 @@ async function getAllRank() {
             console.log('masterCount:', masterCount);
             console.log('grandmasterCount:', grandmasterCount);
 
+            if (globalThis.WQPSixDimRank) {
+                const strength = globalThis.WQPSixDimRank.buildMasterStrengthPool(data, {
+                    geniusCombineTag: WQP_Settings.geniusCombineTag,
+                    geniusAlphaCount: WQP_Settings.geniusAlphaCount,
+                    expertCriteria: levelCriteria.expert,
+                    quota: masterCount,
+                });
+                data.forEach((item) => {
+                    item.strengthTotalRank = null;
+                    item.strengthInPool = false;
+                });
+                strength.pool.forEach((row) => {
+                    const orig = data.find((item) => item.user === row.user);
+                    if (!orig) return;
+                    orig.strengthTotalRank = row.totalRank;
+                    orig.strengthoperatorCountRank = row.operatorCountRank;
+                    orig.strengthoperatorAvgRank = row.operatorAvgRank;
+                    orig.strengthfieldCountRank = row.fieldCountRank;
+                    orig.strengthfieldAvgRank = row.fieldAvgRank;
+                    orig.strengthcommunityActivityRank = row.communityActivityRank;
+                    orig.strengthcompletedReferralsRank = row.completedReferralsRank;
+                    orig.strengthmaxSimulationStreakRank = row.maxSimulationStreakRank;
+                    orig.strengthInPool = true;
+                });
+            }
+
 
 
 
@@ -675,6 +701,15 @@ async function insertRankListInfo() {
             { title: 'Grandmaster Field Avg Rank', data: 'grandmasterfieldAvgRank', visible: false },
             { title: 'Grandmaster Community Activity Rank', data: 'grandmastercommunityActivityRank', visible: false },
             { title: 'Grandmaster Max Simulation Streak Rank', data: 'grandmastermaxSimulationStreakRank', visible: false },
+
+            { title: 'Strength Total Rank', data: 'strengthTotalRank', visible: false },
+            { title: 'Strength Operator Count Rank', data: 'strengthoperatorCountRank', visible: false },
+            { title: 'Strength Operator Avg Rank', data: 'strengthoperatorAvgRank', visible: false },
+            { title: 'Strength Field Count Rank', data: 'strengthfieldCountRank', visible: false },
+            { title: 'Strength Field Avg Rank', data: 'strengthfieldAvgRank', visible: false },
+            { title: 'Strength Community Activity Rank', data: 'strengthcommunityActivityRank', visible: false },
+            { title: 'Strength Max Simulation Streak Rank', data: 'strengthmaxSimulationStreakRank', visible: false },
+            { title: 'Strength In Pool', data: 'strengthInPool', visible: false },
         ];
 
 
@@ -798,7 +833,7 @@ async function insertRankListInfo() {
                 html += '<div style="margin:12px 0 8px 0;"><b>六维</b></div>';
                 html += '<div style="display: flex; flex-direction: column;">' + toRows(six, 3) + '</div>';
             }
-            for (const model of ["gold", "expert", "master", "grandmaster"]) {
+            for (const model of ["gold", "expert", "master", "grandmaster", "strength"]) {
                 var modelFields = columnsArr.filter(function (col) {
                     return col.title && col.title.toLowerCase().startsWith(model);
                 });
@@ -945,6 +980,26 @@ async function calculateRanks(data, userId, WQP_Settings) {
         result[model]['count'] = item_count;
     }
 
+    if (globalThis.WQPSixDimRank) {
+        const strength = globalThis.WQPSixDimRank.buildMasterStrengthPool(data, {
+            userId,
+            geniusCombineTag: WQP_Settings.geniusCombineTag,
+            geniusAlphaCount: WQP_Settings.geniusAlphaCount,
+            expertCriteria: levelCriteria.expert,
+            quota: Math.min(250, Math.round(result.gold.baseCount * 0.08)),
+        });
+        result.strength = {
+            ...(strength.ranks || {}),
+            rank: strength.userRank,
+            count: strength.sourceCount,
+            poolCount: strength.poolCount,
+            quota: strength.quota,
+            inQuota: strength.inQuota,
+            injected: strength.injected,
+            baseCount: strength.baseCount,
+        };
+    }
+
     return result;
 }
 
@@ -962,6 +1017,7 @@ function rankInfo2Html(result) {
         <li>For Expert: ${result.expert.count} / ${Math.min(675, Math.round(result.gold.baseCount * 0.2))}</li>
         <li>For Master: ${result.master.count} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</li>
         <li>For Grandmaster: ${result.grandmaster.count} / ${Math.min(75, Math.round(result.gold.baseCount * 0.02))}</li>
+        <li>Master 实力池: ${result.strength ? `${result.strength.poolCount} 人（从 Expert 资格 ${result.strength.count} 人中按六维总评取 ${result.strength.quota} 个名额）` : '未计算'}</li>
     </ul>
     </p>
     
@@ -1001,8 +1057,30 @@ function rankInfo2Html(result) {
         </div>
         <button id="updateRankButton" style="margin-top: 10px; padding: 5px 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">更新排名</button>
     </div>
-    <div style="display: flex; justify-content: space-between; gap: 20px;">
-    <div style="flex: 1;">
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 20px;">
+    <div style="flex: 1 1 240px;">
+        <h4>以 Master 实力池为 Universe</h4>
+        <p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.4;">
+            不是已经过 Master 门槛的人。从 Expert 资格人群里按<strong>六维总评</strong>取出 Master 名额，再在池内重排名。
+            差不多达到门槛但六维强的人会进池；已过门槛但六维弱的人可能进不了。
+        </p>
+        <p><strong>总排名:</strong> ${result.strength?.rank ?? '-'} / ${result.strength?.quota ?? Math.min(250, Math.round(result.gold.baseCount * 0.08))}
+            ${result.strength?.inQuota ? '（六维上已进入名额）' : '（尚未进入名额）'}
+        </p>
+        ${result.strength?.injected ? '<p style="font-size: 12px;">你不在实力池前排，已临时纳入以便对比。</p>' : ''}
+        <ul>
+            <li>Operator Count: ${result.strength?.operatorCountRank ?? '-'} 名</li>
+            <li>Operator Avg: ${result.strength?.operatorAvgRank ?? '-'} 名</li>
+            <li>Field Count: ${result.strength?.fieldCountRank ?? '-'} 名</li>
+            <li>Field Avg: ${result.strength?.fieldAvgRank ?? '-'} 名</li>
+            <li>Community Activity: ${result.strength?.communityActivityRank ?? '-'} 名</li>
+            <li>Completed Referrals: ${result.strength?.completedReferralsRank ?? '-'} 名</li>
+            <li>Max Simulation Streak: ${result.strength?.maxSimulationStreakRank ?? '-'} 名</li>
+            <li>Total Rank: ${result.strength?.totalRank ?? '-'} 名</li>
+        </ul>
+    </div>
+
+    <div style="flex: 1 1 240px;">
         <h4>以 Expert 为 Universe</h4>
         <p><strong>总排名:</strong> ${result.expert.rank} / ${Math.min(675, Math.round(result.gold.baseCount * 0.2))}</p>
         <ul>
@@ -1017,7 +1095,7 @@ function rankInfo2Html(result) {
         </ul>
     </div>
 
-    <div style="flex: 1;">
+    <div style="flex: 1 1 240px;">
         <h4>以 Master 为 Universe</h4>
         <p><strong>总排名:</strong> ${result.master.rank} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</p>
         <ul>
@@ -1032,7 +1110,7 @@ function rankInfo2Html(result) {
         </ul>
     </div>
 
-    <div style="flex: 1;">
+    <div style="flex: 1 1 240px;">
         <h4>以 Grandmaster 为 Universe</h4>
         <p><strong>总排名:</strong> ${result.grandmaster.rank} / ${Math.min(75, Math.round(result.gold.baseCount * 0.02))}</p>
         <ul>

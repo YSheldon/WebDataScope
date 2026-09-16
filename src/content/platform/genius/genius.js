@@ -459,7 +459,7 @@ async function getAllRank() {
                 const strength = globalThis.WQPSixDimRank.buildMasterStrengthPool(data, {
                     geniusCombineTag: WQP_Settings.geniusCombineTag,
                     geniusAlphaCount: WQP_Settings.geniusAlphaCount,
-                    expertCriteria: levelCriteria.expert,
+                    masterCriteria: levelCriteria.master,
                     quota: masterCount,
                 });
                 data.forEach((item) => {
@@ -985,7 +985,7 @@ async function calculateRanks(data, userId, WQP_Settings) {
             userId,
             geniusCombineTag: WQP_Settings.geniusCombineTag,
             geniusAlphaCount: WQP_Settings.geniusAlphaCount,
-            expertCriteria: levelCriteria.expert,
+            masterCriteria: levelCriteria.master,
             quota: Math.min(250, Math.round(result.gold.baseCount * 0.08)),
         });
         result.strength = {
@@ -997,6 +997,7 @@ async function calculateRanks(data, userId, WQP_Settings) {
             inQuota: strength.inQuota,
             injected: strength.injected,
             baseCount: strength.baseCount,
+            near: strength.near,
         };
     }
 
@@ -1017,7 +1018,7 @@ function rankInfo2Html(result) {
         <li>For Expert: ${result.expert.count} / ${Math.min(675, Math.round(result.gold.baseCount * 0.2))}</li>
         <li>For Master: ${result.master.count} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</li>
         <li>For Grandmaster: ${result.grandmaster.count} / ${Math.min(75, Math.round(result.gold.baseCount * 0.02))}</li>
-        <li>Master 实力池: ${result.strength ? `全取 Expert 资格 ${result.strength.count} 人，按六维排名；Master 名额 ${result.strength.quota}` : '未计算'}</li>
+        <li>Master 实力池: ${result.strength ? `全取 ${result.strength.count} 人（已过门槛或信号≥${result.strength.near?.alphaCount ?? 96}/塔≥${result.strength.near?.pyramidCount ?? 24}），Master 名额 ${result.strength.quota}` : '未计算'}</li>
     </ul>
     </p>
     
@@ -1061,15 +1062,15 @@ function rankInfo2Html(result) {
     <div style="flex: 1 1 240px;">
         <h4>以 Master 实力池为 Universe</h4>
         <p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.4;">
-            全取 Expert 资格人群（不过 Master 门槛也算），按<strong>六维总评</strong>在整池里排名。
-            Master 名额只用来判断能不能挤进座位，不截断池子。
+            只收<strong>有实力进 Master</strong>的人：已过门槛，或信号≥${result.strength?.near?.alphaCount ?? 96} 且 塔≥${result.strength?.near?.pyramidCount ?? 24}（门槛的 80%，差不多达到也算）。
+            普通 Expert（20 信号/10 塔）不进。全取该池，按<strong>六维总评</strong>排名；名额只作对照，不截断。
         </p>
         <p><strong>总排名:</strong> ${result.strength?.rank ?? '-'} / ${result.strength?.poolCount ?? '-'}
         </p>
         <p><strong>对照 Master 名额:</strong> ${result.strength?.quota ?? Math.min(250, Math.round(result.gold.baseCount * 0.08))}
             ${result.strength?.inQuota ? '（六维上已进入名额）' : '（尚未进入名额）'}
         </p>
-        ${result.strength?.injected ? '<p style="font-size: 12px;">你尚未达到 Expert 资格，已临时纳入实力池以便对比。</p>' : ''}
+        ${result.strength?.injected ? '<p style="font-size: 12px;">你尚未进入实力池门槛，已临时纳入以便对比。</p>' : ''}
         <ul>
             <li>Operator Count: ${result.strength?.operatorCountRank ?? '-'} 名</li>
             <li>Operator Avg: ${result.strength?.operatorAvgRank ?? '-'} 名</li>

@@ -6,7 +6,13 @@ import vm from 'node:vm';
 const code = readFileSync(new URL('../src/content/platform/genius/sixDimRank.js', import.meta.url), 'utf8');
 const sandbox = { globalThis: {} };
 vm.runInNewContext(`${code}\nthis.api = globalThis.WQPSixDimRank;`, sandbox);
-const { applySixDimRanks, buildMasterStrengthPool, getMasterQuota } = sandbox.api;
+const {
+    applySixDimRanks,
+    buildMasterStrengthPool,
+    getMasterQuota,
+    isMasterContender,
+    nearMasterThresholds,
+} = sandbox.api;
 
 function consultant(overrides) {
     return {
@@ -29,7 +35,21 @@ test('getMasterQuota is 8% capped at 250', () => {
     assert.equal(getMasterQuota(10000), 250);
 });
 
-test('strength pool takes all Expert-eligible people, ranked by six-dim, not sliced to quota', () => {
+test('near Master thresholds are 80% of 120/30', () => {
+    const near = nearMasterThresholds({ alphaCount: 120, pyramidCount: 30 });
+    assert.equal(near.alphaCount, 96);
+    assert.equal(near.pyramidCount, 24);
+});
+
+test('contender includes near-Master (126/28) and full Master, excludes ordinary Expert', () => {
+    const master = { alphaCount: 120, pyramidCount: 30, combinedAlphaPerformance: 1, combinedSelectedAlphaPerformance: 1, combinedPowerPoolAlphaPerformance: 1, combinedOsmosisPerformance: 1 };
+    assert.equal(isMasterContender(consultant({ alphaCount: 126, pyramidCount: 28 }), master, false), true);
+    assert.equal(isMasterContender(consultant({ alphaCount: 130, pyramidCount: 32 }), master, false), true);
+    assert.equal(isMasterContender(consultant({ alphaCount: 50, pyramidCount: 16 }), master, false), false);
+    assert.equal(isMasterContender(consultant({ alphaCount: 200, pyramidCount: 10 }), master, false), false);
+});
+
+test('strength pool is near-Master plus passed-Master, not all Experts, not sliced to quota', () => {
     const data = [
         consultant({
             user: 'weak-master',
@@ -43,9 +63,9 @@ test('strength pool takes all Expert-eligible people, ranked by six-dim, not sli
             fieldAvg: 6,
         }),
         consultant({
-            user: 'strong-expert',
-            alphaCount: 50,
-            pyramidCount: 16,
+            user: 'close-master',
+            alphaCount: 126,
+            pyramidCount: 28,
             operatorCount: 80,
             fieldCount: 60,
             communityActivity: 90,
@@ -54,20 +74,9 @@ test('strength pool takes all Expert-eligible people, ranked by six-dim, not sli
             fieldAvg: 1,
         }),
         consultant({
-            user: 'mid-expert',
-            alphaCount: 40,
-            pyramidCount: 12,
-            operatorCount: 30,
-            fieldCount: 20,
-            communityActivity: 20,
-            maxSimulationStreak: 50,
-            operatorAvg: 7,
-            fieldAvg: 3,
-        }),
-        consultant({
-            user: 'gold-only',
-            alphaCount: 5,
-            pyramidCount: 2,
+            user: 'ordinary-expert',
+            alphaCount: 50,
+            pyramidCount: 16,
             operatorCount: 99,
             fieldCount: 99,
             communityActivity: 99,
@@ -80,37 +89,20 @@ test('strength pool takes all Expert-eligible people, ranked by six-dim, not sli
         geniusAlphaCount: 40,
         quota: 1,
     });
-    assert.equal(pool.sourceCount, 3);
-    assert.equal(pool.poolCount, 3);
-    assert.equal(pool.quota, 1);
+    assert.equal(pool.sourceCount, 2);
+    assert.equal(pool.poolCount, 2);
     const users = pool.pool.map((item) => item.user).sort();
-    assert.deepEqual(users, ['mid-expert', 'strong-expert', 'weak-master']);
+    assert.deepEqual(users, ['close-master', 'weak-master']);
     const ordered = [...pool.pool].sort((a, b) => a.totalRank - b.totalRank).map((item) => item.user);
-    assert.equal(ordered[0], 'strong-expert');
-    assert.equal(pool.pool.some((item) => item.user === 'gold-only'), false);
+    assert.equal(ordered[0], 'close-master');
+    assert.equal(pool.near.alphaCount, 96);
+    assert.equal(pool.near.pyramidCount, 24);
 });
 
-test('expert-eligible user stays in the full pool even if outside Master quota', () => {
+test('ordinary Expert user is injected only for comparison', () => {
     const data = [
-        consultant({ user: 'elite-1', operatorCount: 90, fieldCount: 70, maxSimulationStreak: 400, operatorAvg: 2, fieldAvg: 1 }),
-        consultant({ user: 'elite-2', operatorCount: 85, fieldCount: 65, maxSimulationStreak: 350, operatorAvg: 2.2, fieldAvg: 1.1 }),
-        consultant({ user: 'self', operatorCount: 15, fieldCount: 8, maxSimulationStreak: 10, operatorAvg: 10, fieldAvg: 4 }),
-    ];
-    const pool = buildMasterStrengthPool(data, {
-        userId: 'self',
-        geniusAlphaCount: 40,
-        quota: 2,
-    });
-    assert.equal(pool.injected, false);
-    assert.equal(pool.inQuota, false);
-    assert.equal(pool.poolCount, 3);
-    assert.equal(pool.userRank, 3);
-});
-
-test('user below Expert eligibility is injected for comparison', () => {
-    const data = [
-        consultant({ user: 'elite-1', operatorCount: 90, fieldCount: 70, maxSimulationStreak: 400, operatorAvg: 2, fieldAvg: 1 }),
-        consultant({ user: 'self', alphaCount: 5, pyramidCount: 2, operatorCount: 15, fieldCount: 8, maxSimulationStreak: 10, operatorAvg: 10, fieldAvg: 4 }),
+        consultant({ user: 'close', alphaCount: 126, pyramidCount: 28, operatorCount: 90, fieldCount: 70, maxSimulationStreak: 400, operatorAvg: 2, fieldAvg: 1 }),
+        consultant({ user: 'self', alphaCount: 50, pyramidCount: 16, operatorCount: 15, fieldCount: 8, maxSimulationStreak: 10, operatorAvg: 10, fieldAvg: 4 }),
     ];
     const pool = buildMasterStrengthPool(data, {
         userId: 'self',
@@ -122,10 +114,10 @@ test('user below Expert eligibility is injected for comparison', () => {
     assert.equal(pool.poolCount, 2);
 });
 
-test('strong six-dim user already in quota is not injected', () => {
+test('near-Master user is in the full pool even if outside Master quota', () => {
     const data = [
-        consultant({ user: 'self', operatorCount: 90, fieldCount: 70, maxSimulationStreak: 400, operatorAvg: 2, fieldAvg: 1 }),
-        consultant({ user: 'other', operatorCount: 20, fieldCount: 10, maxSimulationStreak: 10, operatorAvg: 9, fieldAvg: 4 }),
+        consultant({ user: 'elite-1', alphaCount: 140, pyramidCount: 35, operatorCount: 90, fieldCount: 70, maxSimulationStreak: 400, operatorAvg: 2, fieldAvg: 1 }),
+        consultant({ user: 'self', alphaCount: 126, pyramidCount: 28, operatorCount: 15, fieldCount: 8, maxSimulationStreak: 10, operatorAvg: 10, fieldAvg: 4 }),
     ];
     const pool = buildMasterStrengthPool(data, {
         userId: 'self',
@@ -133,9 +125,9 @@ test('strong six-dim user already in quota is not injected', () => {
         quota: 1,
     });
     assert.equal(pool.injected, false);
-    assert.equal(pool.inQuota, true);
-    assert.equal(pool.userRank, 1);
+    assert.equal(pool.inQuota, false);
     assert.equal(pool.poolCount, 2);
+    assert.equal(pool.userRank, 2);
 });
 
 test('applySixDimRanks rewards high counts and low averages', () => {

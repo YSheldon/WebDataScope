@@ -2,6 +2,15 @@
     const HIGHER_BETTER = ['operatorCount', 'fieldCount', 'communityActivity', 'completedReferrals', 'maxSimulationStreak'];
     const LOWER_BETTER = ['operatorAvg', 'fieldAvg'];
     const RANK_COLS = [...HIGHER_BETTER, ...LOWER_BETTER];
+    const MASTER_NEAR_RATIO = 0.8;
+    const DEFAULT_MASTER_CRITERIA = {
+        alphaCount: 120,
+        pyramidCount: 30,
+        combinedAlphaPerformance: 1,
+        combinedSelectedAlphaPerformance: 1,
+        combinedPowerPoolAlphaPerformance: 1,
+        combinedOsmosisPerformance: 1,
+    };
 
     function applySixDimRanks(items) {
         const itemData = (items || []).map((item) => ({ ...item, totalRank: 0 }));
@@ -39,6 +48,21 @@
         return Math.min(250, Math.round(Number(baseCount || 0) * 0.08));
     }
 
+    function nearMasterThresholds(masterCriteria, ratio = MASTER_NEAR_RATIO) {
+        const criteria = masterCriteria || DEFAULT_MASTER_CRITERIA;
+        return {
+            alphaCount: Math.round(criteria.alphaCount * ratio),
+            pyramidCount: Math.round(criteria.pyramidCount * ratio),
+        };
+    }
+
+    // 已过 Master 门槛,或信号/塔达到门槛的 80%(差不多能进)。不要求 Combined。
+    function isMasterContender(item, masterCriteria, geniusCombineTag, ratio = MASTER_NEAR_RATIO) {
+        if (meetsLevelCriteria(item, masterCriteria || DEFAULT_MASTER_CRITERIA, geniusCombineTag)) return true;
+        const near = nearMasterThresholds(masterCriteria, ratio);
+        return (item.alphaCount || 0) >= near.alphaCount && (item.pyramidCount || 0) >= near.pyramidCount;
+    }
+
     function collectRankFields(row) {
         const out = {};
         RANK_COLS.forEach((col) => {
@@ -48,27 +72,22 @@
         return out;
     }
 
-    // 实力池: 全取 Expert 资格人群,按六维总评在整池里排名。
-    // 名额只用来判断是否挤进 Master 座位,不截断池子。
+    // 实力池: 全取「已过 Master 门槛 + 差不多能进(信号/塔 ≥80%)」的人,按六维在整池里排名。
+    // 比 Expert Universe 更窄,比官方 Master Universe 更宽(差几座塔的人也会进)。
     function buildMasterStrengthPool(data, options = {}) {
         const list = Array.isArray(data) ? data : [];
         const userId = options.userId;
         const geniusCombineTag = options.geniusCombineTag === true;
         const geniusAlphaCount = Number(options.geniusAlphaCount || 40);
-        const expertCriteria = options.expertCriteria || {
-            alphaCount: 20,
-            pyramidCount: 10,
-            combinedAlphaPerformance: 0.5,
-            combinedSelectedAlphaPerformance: 0.5,
-            combinedPowerPoolAlphaPerformance: 0.5,
-            combinedOsmosisPerformance: 0.5,
-        };
+        const masterCriteria = options.masterCriteria || DEFAULT_MASTER_CRITERIA;
+        const nearRatio = Number(options.nearRatio || MASTER_NEAR_RATIO);
         const baseCount = list.filter((item) => (item.alphaCount || 0) >= geniusAlphaCount).length;
         const quota = Number.isFinite(options.quota) && options.quota > 0
             ? options.quota
             : Math.max(1, getMasterQuota(baseCount));
+        const near = nearMasterThresholds(masterCriteria, nearRatio);
 
-        let candidates = list.filter((item) => meetsLevelCriteria(item, expertCriteria, geniusCombineTag));
+        let candidates = list.filter((item) => isMasterContender(item, masterCriteria, geniusCombineTag, nearRatio));
         if (!candidates.length) {
             candidates = list.filter((item) => (item.alphaCount || 0) >= geniusAlphaCount);
         }
@@ -89,6 +108,7 @@
         return {
             quota,
             baseCount,
+            near,
             sourceCount: candidates.length,
             poolCount: poolRanked.length,
             inQuota: userRank != null && userRank <= quota,
@@ -104,8 +124,12 @@
         HIGHER_BETTER,
         LOWER_BETTER,
         RANK_COLS,
+        MASTER_NEAR_RATIO,
+        DEFAULT_MASTER_CRITERIA,
         applySixDimRanks,
         meetsLevelCriteria,
+        isMasterContender,
+        nearMasterThresholds,
         getMasterQuota,
         collectRankFields,
         buildMasterStrengthPool,

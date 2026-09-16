@@ -33,6 +33,16 @@ function sanitizeConfig(config) {
     };
 }
 
+export function isLlmConfigured(config = {}) {
+    return Boolean(normalizeBaseUrl(config.baseUrl) && String(config.model || '').trim());
+}
+
+function assertLlmReady(config) {
+    if (!isLlmConfigured(config)) {
+        throw new Error('请先在侧边栏「设置 → AI 设置」填写 Base URL 和 Model，点「测试连接」通过后再生成。');
+    }
+}
+
 export async function getLlmConfig() {
     const saved = await getLocalValue(CONFIG_KEY);
     return sanitizeConfig({ ...DEFAULT_CONFIG, ...(saved || {}) });
@@ -59,6 +69,7 @@ export async function saveLlmConfig(input = {}) {
                 ? existing.apiKey
                 : '',
     });
+    if (isLlmConfigured(next)) next.enabled = true;
     if (next.enabled) {
         await testLlmConfig(next);
     }
@@ -88,20 +99,26 @@ export async function testLlmConnection(input = {}) {
             : existing.apiKey,
     };
     await testLlmConfig(config);
-    return { ok: true, model: config.model };
+    const next = {
+        ...existing,
+        enabled: true,
+        baseUrl: config.baseUrl || existing.baseUrl,
+        model: config.model || existing.model,
+        apiKey: config.apiKey || existing.apiKey,
+    };
+    await setLocalValue(CONFIG_KEY, next);
+    return { ok: true, model: config.model, enabled: true };
 }
 
 export async function runLlmJson({ systemPrompt, userPrompt, schemaName = 'result' }) {
     const config = await getLlmConfigRaw();
-    if (!config.enabled) throw new Error('AI is disabled. Please enable AI in the extension side panel.');
-    if (!config.model) throw new Error('AI model is not configured.');
+    assertLlmReady(config);
     return runLlmJsonWithConfig(config, { systemPrompt, userPrompt, schemaName });
 }
 
 export async function runLlmText({ systemPrompt, userPrompt, taskName = 'result' }) {
     const config = await getLlmConfigRaw();
-    if (!config.enabled) throw new Error('AI is disabled. Please enable AI in the extension side panel.');
-    if (!config.model) throw new Error('AI model is not configured.');
+    assertLlmReady(config);
     return runLlmTextWithConfig(config, { systemPrompt, userPrompt, taskName });
 }
 

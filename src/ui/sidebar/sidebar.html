@@ -39,17 +39,6 @@
                 <span>启用 PNL / Prod Corr 共享</span>
               </label>
               <div class="info-box">开启后，只有完成完整增量同步且校验通过的 Alpha 才会上传；本地 Submitted 日期可以早于当前日期。上传不包含 WQ cookie；下载数据使用不可逆 Alpha alias。</div>
-              <label class="check-row">
-                <input id="llmEnabled" type="checkbox">
-                <span>启用 AI 总结和评论</span>
-              </label>
-              <label class="field">
-                <span>AI 助手默认状态</span>
-                <select id="llmDefaultState">
-                  <option value="expanded">展开</option>
-                  <option value="collapsed">收起</option>
-                </select>
-              </label>
 
               <div class="section-title">Genius 排名分析</div>
                 <label class="check-row">
@@ -62,9 +51,21 @@
                 </label>
 
               <div class="section-title">AI 设置</div>
+                <div class="info-box">填写 Base URL 和 Model 后点「测试连接」。通过后会自动启用 Alpha 页「AI 生成描述」。局域网地址例如 http://192.168.100.191:8000/v1</div>
+                <label class="check-row">
+                    <input id="llmEnabled" type="checkbox">
+                    <span>启用 AI（论坛助手 + 描述生成）</span>
+                </label>
+                <label class="field">
+                    <span>AI 助手默认状态</span>
+                    <select id="llmDefaultState">
+                        <option value="expanded">展开</option>
+                        <option value="collapsed">收起</option>
+                    </select>
+                </label>
                 <label class="field">
                     <span>Base URL</span>
-                    <input id="llmBaseUrl" type="url" placeholder="https://api.deepseek.com 或 https://api.moonshot.cn/v1">
+                    <input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com 或 http://192.168.x.x:8000/v1">
                 </label>
                 <label class="field">
                     <span>Model</span>

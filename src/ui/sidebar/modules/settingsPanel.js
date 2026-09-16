@@ -146,7 +146,9 @@ export async function initSettingsPanel() {
                     apiKey: llmConfig.apiKey,
                 },
             });
-            show(`AI 连接成功：${result?.model || llmConfig.model || '未知模型'}`, 'success');
+            const enabledBox = document.getElementById(ids.llmEnabled);
+            if (enabledBox) enabledBox.checked = true;
+            show(`AI 连接成功：${result?.model || llmConfig.model || '未知模型'}（已自动启用）`, 'success');
         } catch (error) {
             show(`AI 连接失败：${error.message}`, 'error');
         } finally {

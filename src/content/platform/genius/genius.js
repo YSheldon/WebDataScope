@@ -1017,7 +1017,7 @@ function rankInfo2Html(result) {
         <li>For Expert: ${result.expert.count} / ${Math.min(675, Math.round(result.gold.baseCount * 0.2))}</li>
         <li>For Master: ${result.master.count} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</li>
         <li>For Grandmaster: ${result.grandmaster.count} / ${Math.min(75, Math.round(result.gold.baseCount * 0.02))}</li>
-        <li>Master 实力池: ${result.strength ? `${result.strength.poolCount} 人（从 Expert 资格 ${result.strength.count} 人中按六维总评取 ${result.strength.quota} 个名额）` : '未计算'}</li>
+        <li>Master 实力池: ${result.strength ? `全取 Expert 资格 ${result.strength.count} 人，按六维排名；Master 名额 ${result.strength.quota}` : '未计算'}</li>
     </ul>
     </p>
     
@@ -1061,13 +1061,15 @@ function rankInfo2Html(result) {
     <div style="flex: 1 1 240px;">
         <h4>以 Master 实力池为 Universe</h4>
         <p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.4;">
-            不是已经过 Master 门槛的人。从 Expert 资格人群里按<strong>六维总评</strong>取出 Master 名额，再在池内重排名。
-            差不多达到门槛但六维强的人会进池；已过门槛但六维弱的人可能进不了。
+            全取 Expert 资格人群（不过 Master 门槛也算），按<strong>六维总评</strong>在整池里排名。
+            Master 名额只用来判断能不能挤进座位，不截断池子。
         </p>
-        <p><strong>总排名:</strong> ${result.strength?.rank ?? '-'} / ${result.strength?.quota ?? Math.min(250, Math.round(result.gold.baseCount * 0.08))}
+        <p><strong>总排名:</strong> ${result.strength?.rank ?? '-'} / ${result.strength?.poolCount ?? '-'}
+        </p>
+        <p><strong>对照 Master 名额:</strong> ${result.strength?.quota ?? Math.min(250, Math.round(result.gold.baseCount * 0.08))}
             ${result.strength?.inQuota ? '（六维上已进入名额）' : '（尚未进入名额）'}
         </p>
-        ${result.strength?.injected ? '<p style="font-size: 12px;">你不在实力池前排，已临时纳入以便对比。</p>' : ''}
+        ${result.strength?.injected ? '<p style="font-size: 12px;">你尚未达到 Expert 资格，已临时纳入实力池以便对比。</p>' : ''}
         <ul>
             <li>Operator Count: ${result.strength?.operatorCountRank ?? '-'} 名</li>
             <li>Operator Avg: ${result.strength?.operatorAvgRank ?? '-'} 名</li>

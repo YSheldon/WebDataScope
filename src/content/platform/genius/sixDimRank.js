@@ -48,8 +48,8 @@
         return out;
     }
 
-    // 实力池: Expert 资格人群里按六维总评取出 Master 名额,再在池内重排名。
-    // 不过 Master 资格门槛的人只要六维够强也会进池;已过门槛但六维弱的人可能进不了。
+    // 实力池: 全取 Expert 资格人群,按六维总评在整池里排名。
+    // 名额只用来判断是否挤进 Master 座位,不截断池子。
     function buildMasterStrengthPool(data, options = {}) {
         const list = Array.isArray(data) ? data : [];
         const userId = options.userId;
@@ -73,9 +73,7 @@
             candidates = list.filter((item) => (item.alphaCount || 0) >= geniusAlphaCount);
         }
 
-        const ranked = applySixDimRanks(candidates).sort((a, b) => a.totalRank - b.totalRank);
-        const poolSize = Math.min(ranked.length, Math.max(1, quota));
-        const pool = ranked.slice(0, poolSize).map((item) => ({ ...item }));
+        const pool = applySixDimRanks(candidates);
         const userAlreadyIn = Boolean(userId && pool.some((item) => item.user === userId));
         if (userId && !userAlreadyIn) {
             const user = list.find((item) => item.user === userId);

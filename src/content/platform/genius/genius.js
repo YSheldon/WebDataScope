@@ -992,12 +992,13 @@ async function calculateRanks(data, userId, WQP_Settings) {
             ...(strength.ranks || {}),
             rank: strength.userRank,
             count: strength.sourceCount,
+            qualifiedCount: strength.qualifiedCount,
+            challengerCount: strength.challengerCount,
             poolCount: strength.poolCount,
             quota: strength.quota,
             inQuota: strength.inQuota,
             injected: strength.injected,
             baseCount: strength.baseCount,
-            near: strength.near,
         };
     }
 
@@ -1018,7 +1019,7 @@ function rankInfo2Html(result) {
         <li>For Expert: ${result.expert.count} / ${Math.min(675, Math.round(result.gold.baseCount * 0.2))}</li>
         <li>For Master: ${result.master.count} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</li>
         <li>For Grandmaster: ${result.grandmaster.count} / ${Math.min(75, Math.round(result.gold.baseCount * 0.02))}</li>
-        <li>Master 实力池: ${result.strength ? `全取 ${result.strength.count} 人（已过门槛或信号≥${result.strength.near?.alphaCount ?? 96}/塔≥${result.strength.near?.pyramidCount ?? 24}），Master 名额 ${result.strength.quota}` : '未计算'}</li>
+        <li>Master 实力池: ${result.strength ? `已过门槛 ${result.strength.qualifiedCount} 人 + 六维前 ${result.strength.quota} 名挑战者（共 ${result.strength.count} 人）` : '未计算'}</li>
     </ul>
     </p>
     
@@ -1062,15 +1063,15 @@ function rankInfo2Html(result) {
     <div style="flex: 1 1 240px;">
         <h4>以 Master 实力池为 Universe</h4>
         <p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.4;">
-            只收<strong>有实力进 Master</strong>的人：已过门槛，或信号≥${result.strength?.near?.alphaCount ?? 96} 且 塔≥${result.strength?.near?.pyramidCount ?? 24}（门槛的 80%，差不多达到也算）。
-            普通 Expert（20 信号/10 塔）不进。全取该池，按<strong>六维总评</strong>排名；名额只作对照，不截断。
+            只收<strong>有实力进 Master</strong>的人：已过 Master 门槛的全收（${result.strength?.qualifiedCount ?? '-'} 人，哪怕六维弱），
+            其余 Expert 资格人群按<strong>六维总评</strong>取前 ${result.strength?.quota ?? 250} 名挑战者。池大小 = 已过门槛人数 + 名额。整池按六维排名。
         </p>
         <p><strong>总排名:</strong> ${result.strength?.rank ?? '-'} / ${result.strength?.poolCount ?? '-'}
         </p>
         <p><strong>对照 Master 名额:</strong> ${result.strength?.quota ?? Math.min(250, Math.round(result.gold.baseCount * 0.08))}
             ${result.strength?.inQuota ? '（六维上已进入名额）' : '（尚未进入名额）'}
         </p>
-        ${result.strength?.injected ? '<p style="font-size: 12px;">你尚未进入实力池门槛，已临时纳入以便对比。</p>' : ''}
+        ${result.strength?.injected ? `<p style="font-size: 12px;">你未入池（未过门槛且六维不在前 ${result.strength?.quota ?? 250} 名），已临时纳入以便对比。</p>` : ''}
         <ul>
             <li>Operator Count: ${result.strength?.operatorCountRank ?? '-'} 名</li>
             <li>Operator Avg: ${result.strength?.operatorAvgRank ?? '-'} 名</li>

@@ -226,6 +226,10 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 function injectFetchInterceptor(tabId) {
     chrome.scripting.executeScript({
         target: { tabId: tabId },
+        world: "MAIN",
+        files: ['src/content/shared/wqpClientQuery.js'],
+    }).catch(() => {}).finally(() => chrome.scripting.executeScript({
+        target: { tabId: tabId },
         world: "MAIN", // 必须指定 MAIN，否则无法覆盖页面本身的 window.fetch
         func: () => {
 
@@ -292,30 +296,6 @@ function injectFetchInterceptor(tabId) {
                 'maxProdCorr': { serverSortable: false },
                 'regular.operatorCount': { serverSortable: true },
             };
-            const WQP_CLIENT_ONLY_FIELDS = Object.keys(WQP_COLUMN_REGISTRY)
-                .filter(key => WQP_COLUMN_REGISTRY[key].serverSortable === false);
-
-            function stripClientOnlyQueryParams(rawUrl) {
-                try {
-                    const parsed = new URL(rawUrl, window.location.origin);
-                    const order = parsed.searchParams.get('order');
-                    if (order) {
-                        const field = order.startsWith('-') ? order.slice(1) : order;
-                        if (WQP_CLIENT_ONLY_FIELDS.includes(field)) {
-                            parsed.searchParams.delete('order');
-                        }
-                    }
-                    WQP_CLIENT_ONLY_FIELDS.forEach(field => {
-                        ['<', '>', '<=', '>=', '=', '!='].forEach(op => {
-                            parsed.searchParams.delete(`${field}${op}`);
-                        });
-                    });
-                    return parsed.toString();
-                } catch (e) {
-                    return rawUrl;
-                }
-            }
-
             function getAlphaCheckStates(originalData) {
                 function readProdMemoCache() {
                     try {
@@ -416,21 +396,54 @@ function injectFetchInterceptor(tabId) {
             window.__wq_fetch_intercepted = true;
 
             const originalFetch = window.fetch;
+            const clientAlphaCache = new Map();
+
+            async function loadAlphasForClientQuery(serverUrl) {
+                const cached = clientAlphaCache.get(serverUrl);
+                if (cached && Date.now() - cached.at < 120000) return cached.rows;
+                const rows = [];
+                let offset = 0;
+                let total = Infinity;
+                const pageSize = 100;
+                while (offset < total && offset < 20000) {
+                    const joiner = serverUrl.includes('?') ? '&' : '?';
+                    const pageUrl = `${serverUrl}${joiner}limit=${pageSize}&offset=${offset}`;
+                    let response;
+                    for (let attempt = 0; attempt < 5; attempt += 1) {
+                        response = await originalFetch(pageUrl, { credentials: 'include' });
+                        if (response.status !== 429) break;
+                        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+                    }
+                    if (!response?.ok) throw new Error(`虚拟列全库拉取失败: HTTP ${response?.status}`);
+                    const modified = getAlphaCheckStates(await response.json());
+                    const page = Array.isArray(modified?.results) ? modified.results : [];
+                    total = Number(modified?.count ?? rows.length + page.length);
+                    rows.push(...page);
+                    console.log(`[WQP] 虚拟列全库拉取 ${rows.length}/${total}`);
+                    if (!page.length || page.length < pageSize) break;
+                    offset += page.length;
+                }
+                clientAlphaCache.set(serverUrl, { at: Date.now(), rows });
+                return rows;
+            }
+
             window.fetch = async function (...args) {
                 let url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
-                // 虚拟列(Failed RA/PPA、Pyramid、Corr 系列)服务端不认识,
-                // 排序/筛选参数必须在请求发出前剥离,否则整表报 Invalid query
-                if (url && url.includes("https://api.worldquantbrain.com/users/self/alphas?")) {
-                    const cleaned = stripClientOnlyQueryParams(url);
-                    if (cleaned !== url) {
-                        if (typeof args[0] === 'string') {
-                            args[0] = cleaned;
-                        } else if (args[0] instanceof Request) {
-                            args[0] = new Request(cleaned, args[0]);
-                        }
-                        url = cleaned;
+                const clientQuery = window.WQPClientQuery?.parseAlphasListUrl(url);
+                if (clientQuery?.active) {
+                    try {
+                        const rows = await loadAlphasForClientQuery(clientQuery.serverUrl);
+                        const filtered = window.WQPClientQuery.applyClientQuery(rows, clientQuery);
+                        const page = window.WQPClientQuery.pageResult(filtered, clientQuery);
+                        console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}`);
+                        return new Response(JSON.stringify(page), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' },
+                        });
+                    } catch (error) {
+                        console.error('[WQP] 虚拟列全库筛选失败，回退服务端结果', error);
                     }
                 }
 
@@ -468,7 +481,7 @@ function injectFetchInterceptor(tabId) {
                 return originalSetRequestHeader.apply(this, arguments);
             };
         }
-    }).catch(err => console.error("注入 Fetch 拦截器失败：", err));
+    }).catch(err => console.error("注入 Fetch 拦截器失败：", err)));
 }
 
 // alphaPath: ["is", "sharpe"]， 从select performence开始搜索， activeTabsWithoutParent: ["unsubmitted", "submitted"],

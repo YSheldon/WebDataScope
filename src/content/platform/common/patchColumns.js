@@ -17,31 +17,33 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'string',
-            width: 100
+            width: 100,
+            serverSortable: true
         },
         {
             id: 'failedNumRA',
             parent: 'is',
             name: 'Failed RA',
             active: true,
-            // filterOperator: "~",
             category: 'WQP',
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'integer',
-            width: 80
+            width: 80,
+            // 插件在响应里注入的虚拟字段,服务端不认识,排序/筛选只能在当前页内做
+            serverSortable: false
         },
         {
             id: 'failedNumPPA',
             parent: 'is',
             name: 'Failed PPA',
             active: true,
-            // filterOperator: "~",
             category: 'WQP',
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'integer',
-            width: 80
+            width: 80,
+            serverSortable: false
         },
         {
             id: 'WQPPYS',
@@ -52,6 +54,7 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'string',
+            serverSortable: false
         },
         {
             id: 'maxSelfCorr',
@@ -61,7 +64,8 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'string',
-            width: 115
+            width: 115,
+            serverSortable: false
         },
         {
             id: 'maxPoolProdCorr',
@@ -71,7 +75,8 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'string',
-            width: 115
+            width: 115,
+            serverSortable: false
         },
         {
             id: 'maxProdCorr',
@@ -81,7 +86,8 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'string',
-            width: 115
+            width: 115,
+            serverSortable: false
         },
         {
             id: 'operatorCount',
@@ -92,7 +98,9 @@
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,
             type: 'integer',
-            width: 80
+            width: 80,
+            // API 实测支持 order=regular.operatorCount 与 regular.operatorCount<N 筛选
+            serverSortable: true
         },
     ];
     function buildReplacement() {

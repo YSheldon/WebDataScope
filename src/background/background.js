@@ -280,6 +280,42 @@ function injectFetchInterceptor(tabId) {
             }
 
             // 将辅助函数定义在注入的内容脚本内
+            // WQP 注入列: serverSortable=false 的是插件在响应里注入的虚拟字段,
+            // 服务端不认识,排序/筛选参数必须在请求发出前剥离,否则 API 返回 400 "Invalid query"
+            const WQP_COLUMN_REGISTRY = {
+                'id': { serverSortable: true },
+                'is.failedNumRA': { serverSortable: false },
+                'is.failedNumPPA': { serverSortable: false },
+                'is.WQPPYS': { serverSortable: false },
+                'maxSelfCorr': { serverSortable: false },
+                'maxPoolProdCorr': { serverSortable: false },
+                'maxProdCorr': { serverSortable: false },
+                'regular.operatorCount': { serverSortable: true },
+            };
+            const WQP_CLIENT_ONLY_FIELDS = Object.keys(WQP_COLUMN_REGISTRY)
+                .filter(key => WQP_COLUMN_REGISTRY[key].serverSortable === false);
+
+            function stripClientOnlyQueryParams(rawUrl) {
+                try {
+                    const parsed = new URL(rawUrl, window.location.origin);
+                    const order = parsed.searchParams.get('order');
+                    if (order) {
+                        const field = order.startsWith('-') ? order.slice(1) : order;
+                        if (WQP_CLIENT_ONLY_FIELDS.includes(field)) {
+                            parsed.searchParams.delete('order');
+                        }
+                    }
+                    WQP_CLIENT_ONLY_FIELDS.forEach(field => {
+                        ['<', '>', '<=', '>=', '=', '!='].forEach(op => {
+                            parsed.searchParams.delete(`${field}${op}`);
+                        });
+                    });
+                    return parsed.toString();
+                } catch (e) {
+                    return rawUrl;
+                }
+            }
+
             function getAlphaCheckStates(originalData) {
                 function readProdMemoCache() {
                     try {
@@ -381,8 +417,22 @@ function injectFetchInterceptor(tabId) {
 
             const originalFetch = window.fetch;
             window.fetch = async function (...args) {
-                const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                let url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
+
+                // 虚拟列(Failed RA/PPA、Pyramid、Corr 系列)服务端不认识,
+                // 排序/筛选参数必须在请求发出前剥离,否则整表报 Invalid query
+                if (url && url.includes("https://api.worldquantbrain.com/users/self/alphas?")) {
+                    const cleaned = stripClientOnlyQueryParams(url);
+                    if (cleaned !== url) {
+                        if (typeof args[0] === 'string') {
+                            args[0] = cleaned;
+                        } else if (args[0] instanceof Request) {
+                            args[0] = new Request(cleaned, args[0]);
+                        }
+                        url = cleaned;
+                    }
+                }
 
                 // 执行原始请求
                 const response = await originalFetch.apply(this, args);

@@ -8,6 +8,7 @@ const {
     applyClientQuery,
     pageResult,
     compare,
+    injectAlphaOptions,
 } = require('../src/content/shared/wqpClientQuery.js');
 
 function row(ra, ppa, pyramid = '') {
@@ -50,6 +51,31 @@ test('filter <1 and sort by failed PPA across the whole pool', () => {
     const page = pageResult(filtered, { ...parsed, limit: 1, offset: 1 });
     assert.equal(page.count, 2);
     assert.equal(page.results[0].is.failedNumPPA, 1);
+});
+
+test('unprefixed failedNumPPA is a client filter and operatorCount stays on the server', () => {
+    const parsed = parseAlphasListUrl(
+        'https://api.worldquantbrain.com/users/self/alphas?limit=10&offset=0&failedNumPPA<1&operatorCount<6&order=operatorCount',
+    );
+    assert.equal(parsed.active, true);
+    assert.equal(parsed.clientFilters[0].field, 'is.failedNumPPA');
+    assert.equal(parsed.clientFilters[0].op, '<');
+    const server = decodeURIComponent(parsed.serverUrl);
+    assert.match(server, /regular\.operatorCount<6/);
+    assert.match(server, /order=regular\.operatorCount/);
+    assert.doesNotMatch(server, /failedNumPPA/);
+});
+
+test('OPTIONS schema gains the virtual integer fields', () => {
+    const schema = {
+        is: { children: { sharpe: { type: 'decimal' } } },
+        regular: { children: { code: { type: 'string' } } },
+    };
+    injectAlphaOptions(schema);
+    assert.equal(schema.is.children.failedNumPPA.type, 'integer');
+    assert.equal(schema.is.children.failedNumRA.type, 'integer');
+    assert.equal(schema.regular.children.operatorCount.type, 'integer');
+    assert.equal(schema.is.children.sharpe.type, 'decimal');
 });
 
 test('numeric compare treats zero as less than one', () => {

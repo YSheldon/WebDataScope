@@ -427,8 +427,14 @@ function injectFetchInterceptor(tabId) {
                 return rows;
             }
 
+            function requestMethod(resource, config) {
+                const method = config?.method || (resource instanceof Request ? resource.method : 'GET');
+                return String(method || 'GET').toUpperCase();
+            }
+
             window.fetch = async function (...args) {
                 let url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                const method = requestMethod(args[0], args[1]);
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
                 const clientQuery = window.WQPClientQuery?.parseAlphasListUrl(url);
@@ -450,8 +456,23 @@ function injectFetchInterceptor(tabId) {
                 // 执行原始请求
                 const response = await originalFetch.apply(this, args);
 
+                // OPTIONS 字段表里补上虚拟列，否则筛选框会报
+                // "The filter failedNumPPA is invalid. Try a different syntax"
+                if (method === 'OPTIONS' && /\/users\/[^/]+\/alphas\/?$/.test(url.split('?')[0]) && window.WQPClientQuery?.injectAlphaOptions) {
+                    try {
+                        const schema = window.WQPClientQuery.injectAlphaOptions(await response.clone().json());
+                        return new Response(JSON.stringify(schema), {
+                            status: response.status,
+                            statusText: response.statusText,
+                            headers: response.headers,
+                        });
+                    } catch (error) {
+                        console.error('[WQP] 补虚拟列字段表失败', error);
+                    }
+                }
+
                 // 拦截并修改目标接口的响应
-                if (url && url.includes("https://api.worldquantbrain.com/users/self/alphas?")) {
+                if (url && url.includes('/users/') && url.includes('/alphas?')) {
                     try {
                         const clone = response.clone();
                         let originalData = await clone.json();

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const code = readFileSync(new URL('../src/content/platform/genius/sixDimRank.js', import.meta.url), 'utf8');
 const sandbox = { globalThis: {} };
 vm.runInNewContext(`${code}\nthis.api = globalThis.WQPSixDimRank;`, sandbox);
-const { applySixDimRanks, buildMasterStrengthPool, getMasterQuota } = sandbox.api;
+const { applySixDimRanks, buildMasterStrengthPool, getMasterQuota, splitGmSeats } = sandbox.api;
 
 function consultant(overrides) {
     return {
@@ -134,6 +134,35 @@ test('qualified user is always in the pool even with weak six-dim', () => {
     assert.equal(pool.injected, false);
     assert.equal(pool.poolCount, 2);
     assert.equal(pool.userRank, 2);
+});
+
+test('only GM-eligible people ahead in the Master pool who also win a GM seat are removed', () => {
+    const masterRanks = [
+        { user: 'self', totalRank: 100 },
+        { user: 'gm-ahead-wins', totalRank: 10 },
+        { user: 'gm-ahead-loses', totalRank: 20 },
+        { user: 'gm-behind', totalRank: 200 },
+        { user: 'master-only', totalRank: 30 },
+    ];
+    const gmRanks = [
+        { user: 'gm-ahead-wins', totalRank: 1 },
+        { user: 'gm-ahead-loses', totalRank: 9 },
+        { user: 'gm-behind', totalRank: 2 },
+    ];
+    const split = splitGmSeats({
+        masterRanks,
+        gmRanks,
+        userId: 'self',
+        gmQuota: 2,
+        masterAhead: 3,
+        masterQuota: 250,
+    });
+    assert.equal(split.gmCount, 3);
+    assert.equal(split.gmAhead, 2);
+    assert.equal(split.gmNotAhead, 1);
+    assert.equal(split.winnersAhead, 1);
+    assert.equal(split.adjustedAhead, 2);
+    assert.equal(split.inSeat, true);
 });
 
 test('applySixDimRanks rewards high counts and low averages', () => {

@@ -55,6 +55,32 @@
         return Math.min(250, Math.round(Number(baseCount || 0) * 0.08));
     }
 
+    // GM 席从 GM 过线人群里按该池六维取前 gmQuota。
+    // 只有「Master 池六维排在用户前面、并且拿到 GM 席」的人，才会从 Master 名次里让位。
+    function splitGmSeats({ masterRanks, gmRanks, userId, gmQuota, masterAhead, masterQuota }) {
+        const masterByUser = new Map((masterRanks || []).map((row) => [row.user, row.totalRank]));
+        const userMaster = masterByUser.get(userId);
+        if (userMaster == null) return null;
+        const gmPool = (gmRanks || []).filter((row) => masterByUser.has(row.user));
+        const sortedGm = gmPool.slice().sort((a, b) => a.totalRank - b.totalRank || String(a.user).localeCompare(String(b.user)));
+        const seats = Math.max(0, Number(gmQuota) || 0);
+        const winners = sortedGm.slice(0, seats);
+        const winnerIds = new Set(winners.map((row) => row.user));
+        const gmAhead = gmPool.filter((row) => row.user !== userId && masterByUser.get(row.user) < userMaster);
+        const winnersAhead = gmAhead.filter((row) => winnerIds.has(row.user));
+        const adjustedAhead = Math.max(0, Number(masterAhead || 0) - winnersAhead.length);
+        const nextGm = sortedGm[seats];
+        return {
+            gmCount: gmPool.length,
+            gmAhead: gmAhead.length,
+            gmNotAhead: gmPool.filter((row) => row.user !== userId).length - gmAhead.length,
+            winnersAhead: winnersAhead.length,
+            adjustedAhead,
+            inSeat: adjustedAhead < Number(masterQuota),
+            cutoffTie: Boolean(winners.length && nextGm && winners[winners.length - 1].totalRank === nextGm.totalRank),
+        };
+    }
+
     function collectRankFields(row) {
         const out = {};
         RANK_COLS.forEach((col) => {
@@ -126,6 +152,7 @@
         applySixDimRanks,
         meetsLevelCriteria,
         getMasterQuota,
+        splitGmSeats,
         collectRankFields,
         buildMasterStrengthPool,
     };

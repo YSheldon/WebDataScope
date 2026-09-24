@@ -948,11 +948,13 @@ async function calculateRanks(data, userId, WQP_Settings) {
     result['gold']['count'] = data.length;
     result['gold']['baseCount'] = data.filter(item => item.alphaCount >= WQP_Settings.geniusAlphaCount).length;
 
+    const poolSnapshot = {};
     for (const model of ["expert", "master", "grandmaster"]) {
         let itemData = data.filter(item => item.alphaCount >= levelCriteria[model].alphaCount && item.pyramidCount >= levelCriteria[model].pyramidCount);
         if (WQP_Settings.geniusCombineTag) {
             itemData = itemData.filter(item => item.combinedAlphaPerformance >= levelCriteria[model].combinedAlphaPerformance || item.combinedSelectedAlphaPerformance >= levelCriteria[model].combinedSelectedAlphaPerformance || item.combinedPowerPoolAlphaPerformance >= levelCriteria[model].combinedPowerPoolAlphaPerformance || item.combinedOsmosisPerformance >= levelCriteria[model].combinedOsmosisPerformance);
         }
+        const eligibleUsers = new Set(itemData.map(item => item.user));
         result['gold'][model + 'Rank'] = itemData.filter(item => item.totalRank < userData.totalRank).length + 1;
 
         item_count = itemData.length;
@@ -978,6 +980,22 @@ async function calculateRanks(data, userId, WQP_Settings) {
         result[model] = Object.fromEntries(Object.entries(itemUserData).filter(([key, value]) => key.endsWith('Rank')));
         result[model]['rank'] = itemData.filter(item => item.totalRank < itemUserData.totalRank).length;
         result[model]['count'] = item_count;
+        poolSnapshot[model] = itemData
+            .filter(item => eligibleUsers.has(item.user))
+            .map(item => ({ user: item.user, totalRank: item.totalRank }));
+    }
+
+    if (globalThis.WQPSixDimRank && poolSnapshot.master && poolSnapshot.grandmaster) {
+        const masterQuota = Math.min(250, Math.round(result.gold.baseCount * 0.08));
+        const gmQuota = Math.min(75, Math.round(result.gold.baseCount * 0.02));
+        result.master.gmSplit = globalThis.WQPSixDimRank.splitGmSeats({
+            masterRanks: poolSnapshot.master,
+            gmRanks: poolSnapshot.grandmaster,
+            userId,
+            gmQuota,
+            masterAhead: result.master.rank,
+            masterQuota,
+        });
     }
 
     if (globalThis.WQPSixDimRank) {
@@ -1102,6 +1120,12 @@ function rankInfo2Html(result) {
     <div style="flex: 1 1 240px;">
         <h4>以 Master 为 Universe</h4>
         <p><strong>总排名:</strong> ${result.master.rank} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</p>
+        ${result.master.gmSplit ? `<p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.45;">
+            GM 过线 ${result.master.gmSplit.gmCount} 人里，Master 六维排在你前面 <strong>${result.master.gmSplit.gmAhead}</strong> 人，排在你后面或持平 ${result.master.gmSplit.gmNotAhead} 人。<br>
+            前面这 ${result.master.gmSplit.gmAhead} 人里，GM 池六维能坐上 GM 席的 <strong>${result.master.gmSplit.winnersAhead}</strong> 人。这些人离开后，你前面还剩 <strong>${result.master.gmSplit.adjustedAhead}</strong> 人。
+            ${result.master.gmSplit.inSeat ? '按这个口径，你在 Master 名额内。' : '按这个口径，你仍在 Master 名额外。'}
+            ${result.master.gmSplit.cutoffTie ? 'GM 名额边界有六维并列，实际席位可能有出入。' : ''}
+        </p>` : ''}
         <ul>
             <li>Operator Count: ${result.master.operatorCountRank} 名</li>
             <li>Operator Avg: ${result.master.operatorAvgRank} 名</li>

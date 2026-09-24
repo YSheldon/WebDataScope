@@ -1121,8 +1121,8 @@ function rankInfo2Html(result) {
         <h4>以 Master 为 Universe</h4>
         <p><strong>总排名:</strong> ${result.master.rank} / ${Math.min(250, Math.round(result.gold.baseCount * 0.08))}</p>
         ${result.master.gmSplit ? `<p style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.45;">
-            GM 过线 ${result.master.gmSplit.gmCount} 人里，Master 六维排在你前面 <strong>${result.master.gmSplit.gmAhead}</strong> 人，排在你后面或持平 ${result.master.gmSplit.gmNotAhead} 人。<br>
-            前面这 ${result.master.gmSplit.gmAhead} 人里，GM 池六维能坐上 GM 席的 <strong>${result.master.gmSplit.winnersAhead}</strong> 人。这些人离开后，你前面还剩 <strong>${result.master.gmSplit.adjustedAhead}</strong> 人。
+            GM 过线 ${result.master.gmSplit.gmCount} 人，按同一套 Master 六维总分：排在你前面 <strong>${result.master.gmSplit.gmAhead}</strong> 人，排在你后面 ${result.master.gmSplit.gmNotAhead} 人。<br>
+            这 ${result.master.gmSplit.gmCount} 人里总分最高的前 ${Math.min(75, Math.round(result.gold.baseCount * 0.02))} 名拿 GM 席，其中排在你前面的 <strong>${result.master.gmSplit.winnersAhead}</strong> 人会让位。让位后你前面还剩 <strong>${result.master.gmSplit.adjustedAhead}</strong> 人。
             ${result.master.gmSplit.inSeat ? '按这个口径，你在 Master 名额内。' : '按这个口径，你仍在 Master 名额外。'}
             ${result.master.gmSplit.cutoffTie ? 'GM 名额边界有六维并列，实际席位可能有出入。' : ''}
         </p>` : ''}

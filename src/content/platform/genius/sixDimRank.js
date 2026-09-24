@@ -55,29 +55,32 @@
         return Math.min(250, Math.round(Number(baseCount || 0) * 0.08));
     }
 
-    // GM 席从 GM 过线人群里按该池六维取前 gmQuota。
-    // 只有「Master 池六维排在用户前面、并且拿到 GM 席」的人，才会从 Master 名次里让位。
+    // 82 个 GM 过线者都在 Master 池里。直接用 Master 池的六维总分排他们，
+    // 前 gmQuota 名拿 GM 席。排在用户前面的就一定也在 Master 的 ahead 里。
     function splitGmSeats({ masterRanks, gmRanks, userId, gmQuota, masterAhead, masterQuota }) {
         const masterByUser = new Map((masterRanks || []).map((row) => [row.user, row.totalRank]));
         const userMaster = masterByUser.get(userId);
         if (userMaster == null) return null;
-        const gmPool = (gmRanks || []).filter((row) => masterByUser.has(row.user));
-        const sortedGm = gmPool.slice().sort((a, b) => a.totalRank - b.totalRank || String(a.user).localeCompare(String(b.user)));
+        const gmPool = (gmRanks || []).filter((row) => row.user !== userId && masterByUser.has(row.user));
+        const sortedGm = gmPool.slice().sort((a, b) =>
+            masterByUser.get(a.user) - masterByUser.get(b.user)
+            || String(a.user).localeCompare(String(b.user))
+        );
         const seats = Math.max(0, Number(gmQuota) || 0);
         const winners = sortedGm.slice(0, seats);
-        const winnerIds = new Set(winners.map((row) => row.user));
-        const gmAhead = gmPool.filter((row) => row.user !== userId && masterByUser.get(row.user) < userMaster);
-        const winnersAhead = gmAhead.filter((row) => winnerIds.has(row.user));
+        const gmAhead = sortedGm.filter((row) => masterByUser.get(row.user) < userMaster);
+        const winnersAhead = winners.filter((row) => masterByUser.get(row.user) < userMaster);
         const adjustedAhead = Math.max(0, Number(masterAhead || 0) - winnersAhead.length);
+        const lastWinner = winners[winners.length - 1];
         const nextGm = sortedGm[seats];
         return {
-            gmCount: gmPool.length,
+            gmCount: sortedGm.length,
             gmAhead: gmAhead.length,
-            gmNotAhead: gmPool.filter((row) => row.user !== userId).length - gmAhead.length,
+            gmNotAhead: sortedGm.length - gmAhead.length,
             winnersAhead: winnersAhead.length,
             adjustedAhead,
             inSeat: adjustedAhead < Number(masterQuota),
-            cutoffTie: Boolean(winners.length && nextGm && winners[winners.length - 1].totalRank === nextGm.totalRank),
+            cutoffTie: Boolean(lastWinner && nextGm && masterByUser.get(lastWinner.user) === masterByUser.get(nextGm.user)),
         };
     }
 

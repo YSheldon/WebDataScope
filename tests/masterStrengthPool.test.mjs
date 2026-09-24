@@ -160,8 +160,8 @@ test('only GM-eligible people ahead in the Master pool who also win a GM seat ar
     assert.equal(split.gmCount, 3);
     assert.equal(split.gmAhead, 2);
     assert.equal(split.gmNotAhead, 1);
-    assert.equal(split.winnersAhead, 1);
-    assert.equal(split.adjustedAhead, 2);
+    assert.equal(split.winnersAhead, 2);
+    assert.equal(split.adjustedAhead, 1);
     assert.equal(split.inSeat, true);
 });
 

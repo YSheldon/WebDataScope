@@ -61,6 +61,8 @@ function usageBadge(fieldId, usage) {
     return badge;
 }
 
+// ---------- 数据字段列表行打标 ----------
+
 async function flagRow(row) {
     if (FIELD_USAGE_STATE.flaggedRows.has(row)) return;
     const link = row.querySelector('a.link[href*="data-fields"]');
@@ -71,21 +73,19 @@ async function flagRow(row) {
     FIELD_USAGE_STATE.flaggedRows.add(row);
 
     const usage = await usageOf(fieldId);
-    if (!link.isConnected) return; // 行已被替换/移除
+    if (!link.isConnected) return;
     link.querySelector('.wq-field-usage-badge')?.remove();
     link.appendChild(usageBadge(fieldId, usage));
 }
 
 function flagVisibleRows() {
-    const rows = document.querySelectorAll('.rt-tr-group');
-    rows.forEach((row) => {
-        if (row.querySelector('a.link[href*="data-fields"]')) {
-            flagRow(row);
-        }
+    document.querySelectorAll('.rt-tr-group').forEach((row) => {
+        if (row.querySelector('a.link[href*="data-fields"]')) flagRow(row);
     });
 }
 
-let detailTimer = null;
+// ---------- 数据字段副页横幅 ----------
+
 function getFieldIdFromUrl() {
     const match = location.href.match(/data-fields\/([^/?#]+)/);
     return match ? decodeURIComponent(match[1]) : '';
@@ -113,38 +113,21 @@ function renderDetailBanner(fieldId, usage) {
 async function updateDetailBanner() {
     const fieldId = getFieldIdFromUrl();
     if (!fieldId) return;
-    if (fieldId === FIELD_USAGE_STATE.currentDetailField) {
-        if (!document.getElementById('wqp-field-usage-banner') && FIELD_USAGE_STATE.usageByField.has(fieldId)) {
-            renderDetailBanner(fieldId, FIELD_USAGE_STATE.usageByField.get(fieldId));
-        }
-        return;
-    }
-    FIELD_USAGE_STATE.currentDetailField = fieldId;
     const usage = await usageOf(fieldId);
-    if (getFieldIdFromUrl() !== fieldId) return; // url changed while loading
+    if (getFieldIdFromUrl() !== fieldId) return;
     renderDetailBanner(fieldId, usage);
 }
 
-let observeTimer = null;
-function scheduleFlag() {
-    if (observeTimer) return;
-    observeTimer = setTimeout(() => {
-        observeTimer = null;
-        flagVisibleRows();
-        updateDetailBanner();
-        updateAlphaFieldStrip();
-    }, 300);
-}
+// ---------- Alpha 详情: 表达式字段 新/已用 条(强不变量: 每轮全清,只建一条) ----------
 
-// ---------- Alpha 详情页: 表达式字段直接标注 新/已用 ----------
-
-const ALPHA_STRIP_STATE = { alphaId: '', tokenCache: new Map() };
 const ALPHA_STOPWORDS = new Set(['true', 'false', 'nan', 'and', 'or', 'not', 'if', 'else']);
+const RESERVED_IDS = new Set(['unsubmitted', 'submitted', 'distribution']);
+let alphaStripBuilding = false;
 
 function getAlphaIdFromUrl() {
     const match = location.href.match(/\/alpha\/([^/?#]+)/);
     const id = match ? decodeURIComponent(match[1]) : '';
-    return id && !['unsubmitted', 'submitted', 'distribution'].includes(id.toLowerCase()) ? id : '';
+    return id && !RESERVED_IDS.has(id.toLowerCase()) ? id : '';
 }
 
 async function fetchAlphaExpression(alphaId) {
@@ -176,10 +159,10 @@ function extractFieldTokens(code) {
     return [...tokens];
 }
 
+const fieldTokenCache = new Map();
+
 async function verifyFieldToken(token) {
-    if (ALPHA_STRIP_STATE.tokenCache.has(token)) {
-        return ALPHA_STRIP_STATE.tokenCache.get(token);
-    }
+    if (fieldTokenCache.has(token)) return fieldTokenCache.get(token);
     let isField = false;
     try {
         const response = await fetch(`https://api.worldquantbrain.com/data-fields/${encodeURIComponent(token)}`, {
@@ -189,7 +172,7 @@ async function verifyFieldToken(token) {
     } catch (_) {
         isField = false;
     }
-    ALPHA_STRIP_STATE.tokenCache.set(token, isField);
+    fieldTokenCache.set(token, isField);
     return isField;
 }
 
@@ -204,61 +187,14 @@ function alphaStripChip(token, usage) {
     return chip;
 }
 
-const RESERVED_IDS = new Set(['unsubmitted', 'submitted', 'distribution']);
-
-function alphaIdFromHref(href) {
-    const match = String(href || '').match(/\/alpha\/([^/?#]+)/);
-    const id = match ? decodeURIComponent(match[1]) : '';
-    return id && !RESERVED_IDS.has(id.toLowerCase()) ? id : '';
-}
-
-function findAlphaIdInNode(node) {
-    const link = node.querySelector('a[href*="/alpha/"]');
-    const fromLink = alphaIdFromHref(link?.href);
-    if (fromLink) return fromLink;
-    const match = (node.innerText || '').match(/Alpha ID\s*[:：]?\s*([A-Za-z0-9]{5,12})/i);
-    if (match && !RESERVED_IDS.has(match[1].toLowerCase())) return match[1];
-    return '';
-}
-
-function resolveAlphaContexts() {
-    const contexts = [];
-    const urlId = getAlphaIdFromUrl();
-    if (urlId) {
-        contexts.push({
-            alphaId: urlId,
-            editor: document.querySelector('.monaco-editor'),
-            dialog: null,
-        });
-        return contexts;
-    }
-    const dialogs = [...document.querySelectorAll('.ui.modal, [role="dialog"], .modal')]
-        .filter((dialog) => dialog.getClientRects().length > 0);
-    for (const dialog of dialogs) {
-        const alphaId = findAlphaIdInNode(dialog);
-        if (alphaId) {
-            contexts.push({ alphaId, editor: dialog.querySelector('.monaco-editor'), dialog });
-        }
-    }
-    return contexts;
-}
-
-function stripHostNodeId(alphaId) {
-    return `wqp-alpha-field-strip-${alphaId}`;
-}
-
-let stripBuilding = '';
-
 async function buildChipsForCode(code) {
     const chips = document.createElement('span');
     chips.className = 'wqp-alpha-chips';
     chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
-    const tokens = extractFieldTokens(code || '');
     let newCount = 0;
     let usedCount = 0;
-    for (const token of tokens) {
-        const isField = await verifyFieldToken(token);
-        if (!isField) continue;
+    for (const token of extractFieldTokens(code || '')) {
+        if (!(await verifyFieldToken(token))) continue;
         const usage = await usageOf(token);
         if (usage.count) usedCount += 1; else newCount += 1;
         chips.appendChild(alphaStripChip(token, usage));
@@ -274,72 +210,96 @@ async function buildChipsForCode(code) {
     return chips;
 }
 
-// 路径 A: /alpha/{id} 整页,表达式是 Monaco 编辑器
-async function updateUrlPageStrip(urlId) {
-    const editor = document.querySelector('.monaco-editor');
-    if (!editor) return;
-    let strip = document.getElementById('wqp-alpha-field-strip-page');
-    if (strip?.dataset.alpha === urlId && strip.querySelector('.wqp-alpha-chips')) return;
-    if (!strip) {
-        strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip-page';
-        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${urlId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-        const anchor = editor.closest('div[class*="container"], section, div') || editor;
-        anchor.parentNode.insertBefore(strip, anchor);
-        console.log('[WQP] 字段使用条已挂载(monaco):', urlId);
-    }
-    strip.dataset.alpha = urlId;
-    strip.querySelectorAll('.wqp-alpha-chips').forEach((chip) => chip.remove());
-    const code = await fetchAlphaExpression(urlId);
-    if (getAlphaIdFromUrl() !== urlId) return;
-    strip.querySelector('.wqp-strip-status')?.remove();
-    strip.appendChild(await buildChipsForCode(code));
+function removeAlphaStrips() {
+    document.querySelectorAll('[id^="wqp-alpha-field-strip"]').forEach((strip) => strip.remove());
 }
 
-// 路径 B: 列表详情/任何带 Code 标题的代码块,直接读 DOM 表达式,不需要 alpha id
-function findCodeBlocks() {
-    const boxes = [];
-    const deadHeadings = [];
+// 锚点优先级: Code 标题下的代码块(插其下方) > Monaco(插其上方) > main(插顶部)
+function locateAlphaAnchor() {
     for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
         if (heading.textContent.trim() !== 'Code') continue;
         let node = heading.parentElement;
-        let found = null;
         for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
-            found = findExprBoxUnder(node);
-            if (found) break;
-        }
-        if (found) {
-            boxes.push(found);
-        } else {
-            deadHeadings.push(heading);
+            let best = null;
+            for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
+                if (candidate.closest('.monaco-editor')) continue;
+                const text = (candidate.innerText || '').trim();
+                if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
+                if (!best || text.length < best.innerText.trim().length) best = candidate;
+            }
+            if (best && best.getClientRects().length > 0) {
+                return { mode: 'after-code-block', node: best };
+            }
         }
     }
-    // 诊断: 找到 Code 标题但没定位到代码块时,给出可见提示而不是无声失败
-    for (const heading of deadHeadings) {
-        if (heading.parentElement?.querySelector(':scope > .wqp-usage-miss')) continue;
-        const miss = document.createElement('div');
-        miss.className = 'wqp-usage-miss';
-        miss.style.cssText = 'font-size:11px; color:#9e9e9e;';
-        miss.textContent = 'WQP: 已发现 Code 标题但未定位到代码块';
-        heading.parentElement?.appendChild(miss);
-        console.warn('[WQP] Code 标题下未找到代码块', heading);
+    const editor = document.querySelector('.monaco-editor');
+    if (editor) {
+        return { mode: 'before-monaco', node: editor.closest('div[class*="container"], section, div') || editor };
     }
-    // 隐藏的重复渲染节点不出条; 嵌套命中的只保留最外层代码块
-    const unique = [...new Set(boxes)].filter((box) => box.getClientRects().length > 0);
-    return unique.filter((box) => !unique.some((other) => other !== box && other.contains(box)));
+    return { mode: 'main', node: document.querySelector('main') || document.body };
 }
 
-function findExprBoxUnder(node) {
-    // 取最内层(文本最短)的候选:外层容器会把设置表格一起包进来导致误判
-    let best = null;
-    for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i], .view-lines')) {
-        if (candidate.closest('.monaco-editor')) continue;
-        const text = (candidate.innerText || '').trim();
-        if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
-        if (!best || text.length < best.innerText.trim().length) best = candidate;
+async function updateAlphaStrip() {
+    const alphaId = getAlphaIdFromUrl();
+    if (!alphaId) {
+        removeAlphaStrips();
+        return;
     }
-    return best;
+    const existing = document.getElementById('wqp-alpha-field-strip');
+    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1') return;
+
+    if (alphaStripBuilding) return;
+    alphaStripBuilding = true;
+    try {
+        removeAlphaStrips();
+        const anchor = locateAlphaAnchor();
+        const strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip';
+        strip.dataset.alpha = alphaId;
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+        if (anchor.mode === 'after-code-block') {
+            anchor.node.parentNode.insertBefore(strip, anchor.node.nextSibling);
+        } else if (anchor.mode === 'before-monaco') {
+            anchor.node.parentNode.insertBefore(strip, anchor.node);
+        } else {
+            anchor.node.prepend(strip);
+        }
+        console.log('[WQP] 字段使用条已挂载:', alphaId, anchor.mode);
+
+        const code = await fetchAlphaExpression(alphaId);
+        if (!strip.isConnected || getAlphaIdFromUrl() !== alphaId) return; // 已被下一轮接管
+        strip.querySelector('.wqp-strip-status')?.remove();
+        strip.appendChild(await buildChipsForCode(code));
+        strip.dataset.done = '1';
+    } finally {
+        alphaStripBuilding = false;
+    }
+}
+
+// ---------- 数据字段代码块路径(列表详情等无 /alpha/{id} 的页面) ----------
+
+function findCodeBlocks() {
+    const boxes = [];
+    for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
+        if (heading.textContent.trim() !== 'Code') continue;
+        let node = heading.parentElement;
+        for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+            let best = null;
+            for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
+                if (candidate.closest('.monaco-editor')) continue;
+                const text = (candidate.innerText || '').trim();
+                if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
+                if (!best || text.length < best.innerText.trim().length) best = candidate;
+            }
+            if (best && best.getClientRects().length > 0) {
+                boxes.push(best);
+                break;
+            }
+        }
+    }
+    const unique = [...new Set(boxes)];
+    return unique.filter((box) => !unique.some((other) => other !== box && other.contains(box)));
 }
 
 function expressionFromBox(box) {
@@ -353,8 +313,9 @@ function expressionFromBox(box) {
 const codeBlockStrips = new WeakMap();
 
 async function updateCodeBlockStrips() {
-    const boxes = findCodeBlocks();
-    for (const box of boxes) {
+    removeAlphaStrips();
+    const keptBoxes = findCodeBlocks();
+    for (const box of keptBoxes) {
         const code = expressionFromBox(box);
         if (!code) continue;
         let strip = codeBlockStrips.get(box);
@@ -369,14 +330,11 @@ async function updateCodeBlockStrips() {
         strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
         strip.innerHTML = '<b style="color:#57606a;">字段使用:</b> <span class="wqp-strip-status">分析中...</span>';
         box.parentNode.insertBefore(strip, box.nextSibling);
-        console.log('[WQP] 字段使用条已挂载(代码块):', code.slice(0, 60));
         const chips = await buildChipsForCode(code);
         strip.querySelector('.wqp-strip-status')?.remove();
         if (strip.isConnected) strip.appendChild(chips);
         codeBlockStrips.set(box, strip);
     }
-    const keptBoxes = boxes;
-    // 清理孤儿条: 代码块已移除,或它被保留代码块包含(旧的外层误判)
     document.querySelectorAll('.wqp-code-strip').forEach((strip) => {
         const box = strip._box;
         if (!box || !box.isConnected || keptBoxes.some((kept) => kept !== box && kept.contains(box))) {
@@ -385,18 +343,37 @@ async function updateCodeBlockStrips() {
     });
 }
 
-async function updateAlphaFieldStrip() {
-    const urlId = getAlphaIdFromUrl();
-    if (urlId && document.querySelector('.monaco-editor')) {
-        // 整页 Monaco 路径生效时,清理代码块路径的条,避免重复
-        document.querySelectorAll('.wqp-code-strip').forEach((strip) => strip.remove());
-        await updateUrlPageStrip(urlId);
-        return;
+// ---------- 主循环 ----------
+
+let observeTimer = null;
+let mainPassRunning = false;
+async function mainPass() {
+    if (mainPassRunning) return;
+    mainPassRunning = true;
+    try {
+        flagVisibleRows();
+        if (getFieldIdFromUrl()) {
+            await updateDetailBanner();
+        } else if (getAlphaIdFromUrl()) {
+            await updateAlphaStrip();
+        } else {
+            await updateCodeBlockStrips();
+        }
+    } catch (error) {
+        console.error('[WQP] fieldUsageFlag 轮询异常:', error);
+    } finally {
+        mainPassRunning = false;
     }
-    document.getElementById('wqp-alpha-field-strip-page')?.remove();
-    await updateCodeBlockStrips();
+}
+
+function scheduleFlag() {
+    if (observeTimer) return;
+    observeTimer = setTimeout(() => {
+        observeTimer = null;
+        mainPass();
+    }, 300);
 }
 
 new MutationObserver(scheduleFlag).observe(document.body, { childList: true, subtree: true });
-setInterval(scheduleFlag, 1500);
-scheduleFlag();
+setInterval(mainPass, 1500);
+mainPass();

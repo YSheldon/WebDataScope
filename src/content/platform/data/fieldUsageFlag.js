@@ -249,67 +249,127 @@ function stripHostNodeId(alphaId) {
 
 let stripBuilding = '';
 
-async function updateAlphaFieldStrip() {
-    const contexts = resolveAlphaContexts();
-    const currentIds = new Set(contexts.map((ctx) => ctx.alphaId));
-
-    // 清理已失效的条(弹窗关闭/切换 alpha)
-    document.querySelectorAll('[id^="wqp-alpha-field-strip-"]').forEach((old) => {
-        if (!currentIds.has(old.dataset.alpha)) old.remove();
-    });
-    if (stripBuilding && !currentIds.has(stripBuilding)) stripBuilding = '';
-
-    for (const ctx of contexts) {
-        const stripId = stripHostNodeId(ctx.alphaId);
-        let strip = document.getElementById(stripId);
-        if (!strip) {
-            strip = document.createElement('div');
-            strip.id = stripId;
-            strip.dataset.alpha = ctx.alphaId;
-            strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-            strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-            if (ctx.editor) {
-                const anchor = ctx.editor.closest('div[class*="container"], section, div') || ctx.editor;
-                anchor.parentNode.insertBefore(strip, anchor);
-            } else if (ctx.dialog) {
-                ctx.dialog.prepend(strip);
-            } else {
-                (document.querySelector('main') || document.body).prepend(strip);
-            }
-            console.log('[WQP] 字段使用条已挂载:', ctx.alphaId, ctx.editor ? '(编辑器上方)' : '(弹窗顶部)');
-        }
-        if (stripBuilding === ctx.alphaId || strip.querySelector('.wqp-alpha-chips')) continue;
-
-        stripBuilding = ctx.alphaId;
-        const status = strip.querySelector('.wqp-strip-status');
-        const code = await fetchAlphaExpression(ctx.alphaId);
-        if (!document.getElementById(stripId)) { stripBuilding = ''; return; }
-        const tokens = extractFieldTokens(code || '');
-        const chips = document.createElement('span');
-        chips.className = 'wqp-alpha-chips';
-        chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
-        strip.appendChild(chips);
-
-        let newCount = 0;
-        let usedCount = 0;
-        for (const token of tokens) {
-            const isField = await verifyFieldToken(token);
-            if (!isField) continue;
-            const usage = await usageOf(token);
-            if (usage.count) usedCount += 1; else newCount += 1;
-            chips.appendChild(alphaStripChip(token, usage));
-        }
-        status?.remove();
-        if (!chips.childElementCount) {
-            chips.innerHTML = '<span style="color:#57606a;">未在表达式中识别到数据字段</span>';
-        } else {
-            const summary = document.createElement('span');
-            summary.style.cssText = 'margin-left:4px; color:#57606a;';
-            summary.textContent = `— 共 ${newCount + usedCount} 个字段: 新 ${newCount} / 已用 ${usedCount}`;
-            chips.appendChild(summary);
-        }
-        stripBuilding = '';
+async function buildChipsForCode(code) {
+    const chips = document.createElement('span');
+    chips.className = 'wqp-alpha-chips';
+    chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
+    const tokens = extractFieldTokens(code || '');
+    let newCount = 0;
+    let usedCount = 0;
+    for (const token of tokens) {
+        const isField = await verifyFieldToken(token);
+        if (!isField) continue;
+        const usage = await usageOf(token);
+        if (usage.count) usedCount += 1; else newCount += 1;
+        chips.appendChild(alphaStripChip(token, usage));
     }
+    if (!chips.childElementCount) {
+        chips.innerHTML = '<span style="color:#57606a;">未识别到数据字段</span>';
+    } else {
+        const summary = document.createElement('span');
+        summary.style.cssText = 'margin-left:4px; color:#57606a;';
+        summary.textContent = `— 共 ${newCount + usedCount} 个字段: 新 ${newCount} / 已用 ${usedCount}`;
+        chips.appendChild(summary);
+    }
+    return chips;
+}
+
+// 路径 A: /alpha/{id} 整页,表达式是 Monaco 编辑器
+async function updateUrlPageStrip(urlId) {
+    const editor = document.querySelector('.monaco-editor');
+    if (!editor) return;
+    let strip = document.getElementById('wqp-alpha-field-strip-page');
+    if (strip?.dataset.alpha === urlId && strip.querySelector('.wqp-alpha-chips')) return;
+    if (!strip) {
+        strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip-page';
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${urlId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+        const anchor = editor.closest('div[class*="container"], section, div') || editor;
+        anchor.parentNode.insertBefore(strip, anchor);
+        console.log('[WQP] 字段使用条已挂载(monaco):', urlId);
+    }
+    strip.dataset.alpha = urlId;
+    strip.querySelectorAll('.wqp-alpha-chips').forEach((chip) => chip.remove());
+    const code = await fetchAlphaExpression(urlId);
+    if (getAlphaIdFromUrl() !== urlId) return;
+    strip.querySelector('.wqp-strip-status')?.remove();
+    strip.appendChild(await buildChipsForCode(code));
+}
+
+// 路径 B: 列表详情/任何带 Code 标题的代码块,直接读 DOM 表达式,不需要 alpha id
+function findCodeBlocks() {
+    const boxes = [];
+    for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
+        if (heading.children.length !== 0) continue;
+        if (heading.textContent.trim() !== 'Code') continue;
+        let node = heading.parentElement;
+        for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+            const box = findExprBoxUnder(node);
+            if (box) {
+                boxes.push(box);
+                break;
+            }
+        }
+    }
+    return [...new Set(boxes)];
+}
+
+function findExprBoxUnder(node) {
+    const candidates = node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i], .view-lines');
+    for (const candidate of candidates) {
+        if (candidate.closest('.monaco-editor')) continue;
+        const text = (candidate.innerText || '').trim();
+        if (text.length >= 8 && text.includes('(') && /[A-Za-z_]/.test(text)) return candidate;
+    }
+    return null;
+}
+
+function expressionFromBox(box) {
+    return (box.innerText || '')
+        .split('\n')
+        .map((line) => line.replace(/^\s*\d+\s*\|?\s*/, ''))
+        .join('\n')
+        .trim();
+}
+
+const codeBlockStrips = new WeakMap();
+
+async function updateCodeBlockStrips() {
+    for (const box of findCodeBlocks()) {
+        const code = expressionFromBox(box);
+        if (!code) continue;
+        let strip = codeBlockStrips.get(box);
+        if (strip) {
+            if (strip.dataset.code === code) continue;
+            strip.remove();
+        }
+        strip = document.createElement('div');
+        strip.className = 'wqp-code-strip';
+        strip._box = box;
+        strip.dataset.code = code;
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = '<b style="color:#57606a;">字段使用:</b> <span class="wqp-strip-status">分析中...</span>';
+        box.parentNode.insertBefore(strip, box.nextSibling);
+        console.log('[WQP] 字段使用条已挂载(代码块):', code.slice(0, 60));
+        const chips = await buildChipsForCode(code);
+        strip.querySelector('.wqp-strip-status')?.remove();
+        if (strip.isConnected) strip.appendChild(chips);
+        codeBlockStrips.set(box, strip);
+    }
+    // 清理代码块已被移除的孤儿条
+    document.querySelectorAll('.wqp-code-strip').forEach((strip) => {
+        if (!strip._box || !strip._box.isConnected) strip.remove();
+    });
+}
+
+async function updateAlphaFieldStrip() {
+    const urlId = getAlphaIdFromUrl();
+    if (urlId && document.querySelector('.monaco-editor')) {
+        await updateUrlPageStrip(urlId);
+        return;
+    }
+    await updateCodeBlockStrips();
 }
 
 new MutationObserver(scheduleFlag).observe(document.body, { childList: true, subtree: true });

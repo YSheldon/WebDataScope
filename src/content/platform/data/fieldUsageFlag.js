@@ -331,13 +331,15 @@ function findCodeBlocks() {
 }
 
 function findExprBoxUnder(node) {
-    const candidates = node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i], .view-lines');
-    for (const candidate of candidates) {
+    // 取最内层(文本最短)的候选:外层容器会把设置表格一起包进来导致误判
+    let best = null;
+    for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i], .view-lines')) {
         if (candidate.closest('.monaco-editor')) continue;
         const text = (candidate.innerText || '').trim();
-        if (text.length >= 8 && text.includes('(') && /[A-Za-z_]/.test(text)) return candidate;
+        if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
+        if (!best || text.length < best.innerText.trim().length) best = candidate;
     }
-    return null;
+    return best;
 }
 
 function expressionFromBox(box) {
@@ -351,7 +353,8 @@ function expressionFromBox(box) {
 const codeBlockStrips = new WeakMap();
 
 async function updateCodeBlockStrips() {
-    for (const box of findCodeBlocks()) {
+    const boxes = findCodeBlocks();
+    for (const box of boxes) {
         const code = expressionFromBox(box);
         if (!code) continue;
         let strip = codeBlockStrips.get(box);
@@ -372,9 +375,13 @@ async function updateCodeBlockStrips() {
         if (strip.isConnected) strip.appendChild(chips);
         codeBlockStrips.set(box, strip);
     }
-    // 清理代码块已被移除的孤儿条
+    const keptBoxes = boxes;
+    // 清理孤儿条: 代码块已移除,或它被保留代码块包含(旧的外层误判)
     document.querySelectorAll('.wqp-code-strip').forEach((strip) => {
-        if (!strip._box || !strip._box.isConnected) strip.remove();
+        const box = strip._box;
+        if (!box || !box.isConnected || keptBoxes.some((kept) => kept !== box && kept.contains(box))) {
+            strip.remove();
+        }
     });
 }
 

@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.7 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.8 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -435,45 +435,43 @@ async function updateDrawerStrip() {
         return;
     }
 
-    // 条挂在 body 层绝对定位到 Code 标题右侧同行: React 重渲染碰不到,也不遮挡代码块
-    const rect = ctx.heading.getBoundingClientRect();
-    const top = `${window.scrollY + rect.top - 2}px`;
-    const left = `${window.scrollX + rect.right + 12}px`;
-
-    if (existing && existing.dataset.alpha !== ctx.alphaId) {
-        existing.remove();
+    // 嵌入文档流: Code 标题与代码块之间;内容正确时不再动它
+    if (existing && existing.dataset.alpha === ctx.alphaId && existing.dataset.done === '1' && existing.isConnected) {
+        return;
     }
-    let strip = document.getElementById('wqp-alpha-field-strip-drawer');
-    if (!strip) {
-        strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip-drawer';
-        strip.dataset.alpha = ctx.alphaId;
-        strip.style.cssText = 'position:absolute; z-index:900; display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; box-shadow:0 2px 6px rgba(0,0,0,.08);';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-        document.body.appendChild(strip);
-        console.log('[WQP] 抽屉字段条已挂载:', ctx.alphaId);
-    }
-    strip.style.top = top;
-    strip.style.left = left;
-    strip.style.maxWidth = '420px';
-    if (existing && existing.dataset.done !== '1' && drawerStripBuilding) return; // 上一轮还在构建,只校正位置
-
-    if (existing.dataset.done === '1') return;
+    if (existing && existing.dataset.alpha !== ctx.alphaId) existing.remove();
     if (drawerStripBuilding) return;
     drawerStripBuilding = true;
     try {
+        // 先取表达式再插入,内容一次性就位
         const code = await fetchAlphaExpression(ctx.alphaId);
-        if (!strip.isConnected) return;
-        if (!code) {
-            const status = strip.querySelector('.wqp-strip-status');
-            if (status) status.textContent = '表达式获取失败,将自动重试...';
-            return; // 不标记 done,下一轮重试
-        }
-        strip.querySelector('.wqp-strip-status')?.remove();
+        if (!code) return;
+        removeAlphaStrips();
+        const strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip-drawer';
+        strip.dataset.alpha = ctx.alphaId;
+        strip.dataset.code = code;
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> `;
         strip.appendChild(await buildChipsForCode(code));
+        insertAfterHeading(strip, ctx.heading);
+        console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId);
         strip.dataset.done = '1';
     } finally {
         drawerStripBuilding = false;
+    }
+}
+
+// 嵌入到 Code 标题之后(标题和代码块之间);标题是父容器末尾时上提一层
+function insertAfterHeading(strip, heading) {
+    if (heading.nextElementSibling) {
+        heading.parentNode.insertBefore(strip, heading.nextElementSibling);
+    } else if (heading.parentNode && heading.parentNode.nextElementSibling) {
+        heading.parentNode.parentNode.insertBefore(strip, heading.parentNode.nextElementSibling);
+    } else if (heading.parentNode) {
+        heading.parentNode.appendChild(strip);
+    } else {
+        (document.querySelector('main') || document.body).prepend(strip);
     }
 }
 

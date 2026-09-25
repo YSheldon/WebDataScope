@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.3 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.4 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -136,7 +136,10 @@ async function fetchAlphaExpression(alphaId) {
         `https://api.worldquantbrain.com/alphas/${alphaId}`,
     ]) {
         try {
-            const response = await fetch(url, { credentials: 'include' });
+            const response = await fetch(url, {
+                credentials: 'include',
+                signal: AbortSignal.timeout(15000), // 防止请求挂起把构建锁卡死
+            });
             if (!response.ok) continue;
             const data = await response.json();
             const code = data?.regular?.code
@@ -401,40 +404,47 @@ function findVisibleCodeBox(panel, code) {
 let drawerStripBuilding = false;
 async function updateDrawerStrip() {
     const ctx = findDrawerAlphaContext();
+    const existing = document.getElementById('wqp-alpha-field-strip-drawer');
     if (!ctx) {
+        if (existing) existing.remove();
         await updateCodeBlockStrips();
         return;
     }
-    const existing = document.getElementById('wqp-alpha-field-strip-drawer');
-    if (existing && existing.dataset.alpha === ctx.alphaId && existing.dataset.done === '1' && existing.isConnected) {
-        // 已就绪: 代码块被 React 重渲染移动时,跟着搬
-        const box = findVisibleCodeBox(ctx.panel, existing.dataset.code);
-        if (box && box.nextElementSibling !== existing) {
-            box.parentNode.insertBefore(existing, box.nextSibling);
-        } else if (!box && !ctx.panel.contains(existing)) {
-            ctx.heading.parentNode.insertBefore(existing, ctx.heading.nextSibling);
-        }
-        return;
+
+    // 条挂在 body 层绝对定位到 Code 标题正下方: React 重渲染碰不到,位置每轮校正
+    const rect = ctx.heading.getBoundingClientRect();
+    const top = `${window.scrollY + rect.bottom + 6}px`;
+    const left = `${window.scrollX + rect.left}px`;
+
+    if (existing && existing.dataset.alpha !== ctx.alphaId) {
+        existing.remove();
     }
+    let strip = document.getElementById('wqp-alpha-field-strip-drawer');
+    if (!strip) {
+        strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip-drawer';
+        strip.dataset.alpha = ctx.alphaId;
+        strip.style.cssText = 'position:absolute; z-index:900; display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; box-shadow:0 2px 6px rgba(0,0,0,.08);';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+        document.body.appendChild(strip);
+        console.log('[WQP] 抽屉字段条已挂载:', ctx.alphaId);
+    }
+    strip.style.top = top;
+    strip.style.left = left;
+    strip.style.maxWidth = `${Math.max(320, Math.round(rect.width))}px`;
+    if (existing && existing.dataset.done !== '1' && drawerStripBuilding) return; // 上一轮还在构建,只校正位置
+
+    if (existing.dataset.done === '1') return;
     if (drawerStripBuilding) return;
     drawerStripBuilding = true;
     try {
-        removeAlphaStrips();
         const code = await fetchAlphaExpression(ctx.alphaId);
-        if (!code) return;
-        const strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip-drawer';
-        strip.dataset.alpha = ctx.alphaId;
-        strip.dataset.code = code;
-        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-        const box = findVisibleCodeBox(ctx.panel, code);
-        if (box) {
-            box.parentNode.insertBefore(strip, box.nextSibling);
-        } else {
-            ctx.heading.parentNode.insertBefore(strip, ctx.heading.nextSibling);
+        if (!strip.isConnected) return;
+        if (!code) {
+            const status = strip.querySelector('.wqp-strip-status');
+            if (status) status.textContent = '表达式获取失败,将自动重试...';
+            return; // 不标记 done,下一轮重试
         }
-        console.log('[WQP] 抽屉字段条已挂载:', ctx.alphaId, box ? '(代码块下方)' : '(标题下方)');
         strip.querySelector('.wqp-strip-status')?.remove();
         strip.appendChild(await buildChipsForCode(code));
         strip.dataset.done = '1';

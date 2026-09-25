@@ -132,7 +132,126 @@ function scheduleFlag() {
         observeTimer = null;
         flagVisibleRows();
         updateDetailBanner();
+        updateAlphaFieldStrip();
     }, 300);
+}
+
+// ---------- Alpha 详情页: 表达式字段直接标注 新/已用 ----------
+
+const ALPHA_STRIP_STATE = { alphaId: '', tokenCache: new Map() };
+const ALPHA_STOPWORDS = new Set(['true', 'false', 'nan', 'and', 'or', 'not', 'if', 'else']);
+
+function getAlphaIdFromUrl() {
+    const match = location.href.match(/\/alpha\/([^/?#]+)/);
+    const id = match ? decodeURIComponent(match[1]) : '';
+    return id && !['unsubmitted', 'submitted', 'distribution'].includes(id.toLowerCase()) ? id : '';
+}
+
+async function fetchAlphaExpression(alphaId) {
+    for (const url of [
+        `https://api.worldquantbrain.com/users/self/alphas/${alphaId}`,
+        `https://api.worldquantbrain.com/alphas/${alphaId}`,
+    ]) {
+        try {
+            const response = await fetch(url, { credentials: 'include' });
+            if (!response.ok) continue;
+            const data = await response.json();
+            const code = data?.regular?.code
+                || [data?.combo?.code, data?.selection?.code].filter(Boolean).join('\n');
+            if (code) return code;
+        } catch (_) { /* try next */ }
+    }
+    return '';
+}
+
+function extractFieldTokens(code) {
+    const tokens = new Set();
+    // 不带括号的标识符 = 变量(字段);带括号的是函数调用(算子)
+    for (const match of code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()/g)) {
+        const token = match[1];
+        if (token.length < 2 || ALPHA_STOPWORDS.has(token.toLowerCase())) continue;
+        tokens.add(token);
+        if (tokens.size >= 24) break;
+    }
+    return [...tokens];
+}
+
+async function verifyFieldToken(token) {
+    if (ALPHA_STRIP_STATE.tokenCache.has(token)) {
+        return ALPHA_STRIP_STATE.tokenCache.get(token);
+    }
+    let isField = false;
+    try {
+        const response = await fetch(`https://api.worldquantbrain.com/data-fields/${encodeURIComponent(token)}`, {
+            credentials: 'include',
+        });
+        isField = response.ok;
+    } catch (_) {
+        isField = false;
+    }
+    ALPHA_STRIP_STATE.tokenCache.set(token, isField);
+    return isField;
+}
+
+function alphaStripChip(token, usage) {
+    const chip = document.createElement('span');
+    chip.style.cssText = 'display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:10px; border:1px solid #d0d7de; background:#fff; font-size:12px;';
+    const name = document.createElement('span');
+    name.textContent = token;
+    name.style.cssText = 'font-weight:600; color:#24292f;';
+    chip.appendChild(name);
+    chip.appendChild(usageBadge(token, usage));
+    return chip;
+}
+
+async function updateAlphaFieldStrip() {
+    const alphaId = getAlphaIdFromUrl();
+    if (!alphaId) return;
+    if (alphaId === ALPHA_STRIP_STATE.alphaId
+        && document.getElementById('wqp-alpha-field-strip')) return;
+
+    let strip = document.getElementById('wqp-alpha-field-strip');
+    if (!strip) {
+        const editor = document.querySelector('.monaco-editor');
+        if (!editor) return; // 页面还没渲染出表达式,等下一轮
+        strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip';
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = '<b style="color:#57606a;">字段使用:</b> 分析中...';
+        const anchor = editor.closest('div[class*="container"], section, div') || editor;
+        anchor.parentNode.insertBefore(strip, anchor);
+    }
+    if (alphaId !== ALPHA_STRIP_STATE.alphaId) {
+        ALPHA_STRIP_STATE.alphaId = alphaId;
+        strip.querySelector('.wqp-alpha-chips')?.remove();
+        strip.querySelectorAll('.wqp-alpha-chip').forEach((chip) => chip.remove());
+    }
+
+    const code = await fetchAlphaExpression(alphaId);
+    if (getAlphaIdFromUrl() !== alphaId) return;
+    const tokens = extractFieldTokens(code || '');
+    const chips = document.createElement('span');
+    chips.className = 'wqp-alpha-chips';
+    chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
+    strip.appendChild(chips);
+
+    let newCount = 0;
+    let usedCount = 0;
+    for (const token of tokens) {
+        const isField = await verifyFieldToken(token);
+        if (!isField) continue;
+        const usage = await usageOf(token);
+        if (usage.count) usedCount += 1; else newCount += 1;
+        chips.appendChild(alphaStripChip(token, usage));
+    }
+    if (!chips.childElementCount) {
+        chips.innerHTML = '<span style="color:#57606a;">未在表达式中识别到数据字段</span>';
+    } else {
+        const summary = document.createElement('span');
+        summary.style.cssText = 'margin-left:4px; color:#57606a;';
+        summary.textContent = `— 共 ${newCount + usedCount} 个字段: 新 ${newCount} / 已用 ${usedCount}`;
+        chips.appendChild(summary);
+    }
 }
 
 new MutationObserver(scheduleFlag).observe(document.body, { childList: true, subtree: true });

@@ -74,20 +74,36 @@ def read_table(path):
         yield from iter_entries(block)
 
 
+LOG_BLOCK = 32768
+
+
 def read_log(path):
     raw = open(path, 'rb').read()
     pos = 0
+    pending = b''
+    pending_type = 0
     while pos + 7 <= len(raw):
-        length, btype = struct.unpack('<HB', raw[pos + 4:pos + 7])
+        if (pos % LOG_BLOCK) + 7 > LOG_BLOCK:
+            pos += LOG_BLOCK - (pos % LOG_BLOCK)
+            continue
+        _crc, length, btype = struct.unpack('<IHB', raw[pos:pos + 7])
         pos += 7
-        if btype == 0 and length == 0:  # bad record
-            break
         record = raw[pos:pos + length]
         pos += length
         if btype == 1:  # full
-            yield from parse_batch(record)
-        elif btype in (2, 3, 4):
-            continue  # partial fragments, skip for simplicity
+            if not pending_type:
+                yield from parse_batch(record)
+        elif btype == 2:  # first fragment
+            pending, pending_type = record, 2
+        elif btype == 3:  # middle
+            if pending_type in (2, 3):
+                pending += record
+                pending_type = 3
+        elif btype == 4:  # last
+            if pending_type in (2, 3):
+                pending += record
+                yield from parse_batch(pending)
+            pending, pending_type = b'', 0
 
 
 def parse_batch(record):
@@ -98,30 +114,29 @@ def parse_batch(record):
     for _ in range(count):
         etype = record[pos]
         pos += 1
-        if etype == 1:
-            klen, pos = varint(record, pos)
-            key = record[pos:pos + klen]
-            pos += klen
-            vlen, pos = varint(record, pos)
-            value = record[pos:pos + vlen]
-            pos += vlen
-            yield key, value
-        elif etype == 0:
-            klen, pos = varint(record, pos)
-            pos += klen
-            yield record[pos - klen:pos], None
-        else:
-            return
+        klen, pos = varint(record, pos)
+        key = record[pos:pos + klen]
+        pos += klen
+        if etype == 0:
+            yield key, None
+            continue
+        vlen, pos = varint(record, pos)
+        value = record[pos:pos + vlen]
+        pos += vlen
+        yield key, value
 
 
 def main():
     needle = (sys.argv[1] if len(sys.argv) > 1 else 'WQP_').encode()
     found = {}
-    files = sorted(glob.glob(os.path.join(DB_DIR, '*.ldb')), reverse=True)
+    # .ldb 先按序号读,活动的 .log 一定最新,放最后覆盖旧值
+    files = sorted(glob.glob(os.path.join(DB_DIR, '*.ldb'))) \
+        + sorted(glob.glob(os.path.join(DB_DIR, '*.log')))
     for path in files:
         try:
             n = 0
-            for key, value in read_table(path):
+            reader = read_log(path) if path.endswith('.log') else read_table(path)
+            for key, value in reader:
                 n += 1
                 if value is not None and needle in key:
                     found[key.decode('utf-8', 'replace')] = value

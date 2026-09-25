@@ -300,17 +300,30 @@ async function updateUrlPageStrip(urlId) {
 // 路径 B: 列表详情/任何带 Code 标题的代码块,直接读 DOM 表达式,不需要 alpha id
 function findCodeBlocks() {
     const boxes = [];
+    const deadHeadings = [];
     for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
-        if (heading.children.length !== 0) continue;
         if (heading.textContent.trim() !== 'Code') continue;
         let node = heading.parentElement;
+        let found = null;
         for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
-            const box = findExprBoxUnder(node);
-            if (box) {
-                boxes.push(box);
-                break;
-            }
+            found = findExprBoxUnder(node);
+            if (found) break;
         }
+        if (found) {
+            boxes.push(found);
+        } else {
+            deadHeadings.push(heading);
+        }
+    }
+    // 诊断: 找到 Code 标题但没定位到代码块时,给出可见提示而不是无声失败
+    for (const heading of deadHeadings) {
+        if (heading.parentElement?.querySelector(':scope > .wqp-usage-miss')) continue;
+        const miss = document.createElement('div');
+        miss.className = 'wqp-usage-miss';
+        miss.style.cssText = 'font-size:11px; color:#9e9e9e;';
+        miss.textContent = 'WQP: 已发现 Code 标题但未定位到代码块';
+        heading.parentElement?.appendChild(miss);
+        console.warn('[WQP] Code 标题下未找到代码块', heading);
     }
     return [...new Set(boxes)];
 }

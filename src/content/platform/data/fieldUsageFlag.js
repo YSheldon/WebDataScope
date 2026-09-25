@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.9 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.0 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -416,6 +416,45 @@ function findVisibleCodeBox(panel, code) {
     return best;
 }
 
+// 表达式文本 XPath 全页反查: 不依赖类名。取最内层命中后,
+// 沿「父级新增文本很少则继续上溯」爬到代码区块边界,条插在该区块之后
+function findCodeBoxByText(code) {
+    const snippet = (code || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+    if (!snippet || /['"]/.test(snippet)) return null;
+    let matches;
+    try {
+        matches = document.evaluate(
+            `//*[contains(normalize-space(.), "${snippet}")]`,
+            document.body, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null,
+        );
+    } catch (_) {
+        return null;
+    }
+    let innermost = null;
+    let innerLen = Infinity;
+    for (let i = 0; i < matches.snapshotLength; i += 1) {
+        const el = matches.snapshotItem(i);
+        if (!el || el.closest('.wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips, script, style')) continue;
+        if (el.getClientRects().length === 0) continue;
+        const len = (el.innerText || '').replace(/\s+/g, ' ').trim().length;
+        if (len < innerLen) {
+            innermost = el;
+            innerLen = len;
+        }
+    }
+    if (!innermost) return null;
+    let node = innermost;
+    for (let depth = 0; depth < 8; depth += 1) {
+        const parent = node.parentElement;
+        if (!parent || parent === document.body) break;
+        const plen = (parent.innerText || '').replace(/\s+/g, ' ').trim().length;
+        const nlen = (node.innerText || '').replace(/\s+/g, ' ').trim().length;
+        if (plen > nlen * 1.5 + 20) break; // 父级开始包含其他内容(settings 等),停在代码区块边界
+        node = parent;
+    }
+    return node;
+}
+
 let drawerStripBuilding = false;
 async function updateDrawerStrip() {
     let ctx = findDrawerAlphaContext();
@@ -454,8 +493,8 @@ async function updateDrawerStrip() {
         strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
         strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> `;
         strip.appendChild(await buildChipsForCode(code));
-        // 锚点按表达式文本全页反查可视代码块(整页/抽屉通用),找不到才退回标题后方
-        const box = findVisibleCodeBox(document.body, code);
+        // 锚点: 类名选择器先试,失败则用表达式文本 XPath 全页反查(不依赖类名)
+        const box = findVisibleCodeBox(document.body, code) || findCodeBoxByText(code);
         if (box) {
             box.parentNode.insertBefore(strip, box.nextSibling);
             console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId, '(代码块下方)');

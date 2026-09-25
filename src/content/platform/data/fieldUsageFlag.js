@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.8 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.9 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -454,8 +454,15 @@ async function updateDrawerStrip() {
         strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
         strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> `;
         strip.appendChild(await buildChipsForCode(code));
-        insertAfterHeading(strip, ctx.heading);
-        console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId);
+        // 锚点按表达式文本全页反查可视代码块(整页/抽屉通用),找不到才退回标题后方
+        const box = findVisibleCodeBox(document.body, code);
+        if (box) {
+            box.parentNode.insertBefore(strip, box.nextSibling);
+            console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId, '(代码块下方)');
+        } else {
+            insertAfterHeading(strip, ctx.heading);
+            console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId, '(标题下方,未反查到代码块)');
+        }
         strip.dataset.done = '1';
     } finally {
         drawerStripBuilding = false;

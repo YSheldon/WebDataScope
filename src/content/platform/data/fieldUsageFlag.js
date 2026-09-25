@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.1 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.2 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -368,6 +368,56 @@ async function updateCodeBlockStrips() {
 
 // ---------- 主循环 ----------
 
+// 无 /alpha/{id} URL 时(列表详情抽屉): 从 Code 标题向上找面板里的 alpha 链接,
+// 表达式一律取 API,条插在 Code 标题正下方——不再猜代码块的 DOM 结构
+function findDrawerAlphaContext() {
+    for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
+        if (heading.textContent.trim() !== 'Code') continue;
+        if (heading.getClientRects().length === 0) continue;
+        let node = heading.parentElement;
+        for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+            const link = node.querySelector('a[href*="/alpha/"]');
+            const alphaId = alphaIdFromHref(link?.href) || findAlphaIdInNode(node);
+            if (alphaId) return { alphaId, heading };
+        }
+    }
+    return null;
+}
+
+let drawerStripBuilding = false;
+async function updateDrawerStrip() {
+    const ctx = findDrawerAlphaContext();
+    if (!ctx) {
+        await updateCodeBlockStrips();
+        return;
+    }
+    const existing = document.getElementById('wqp-alpha-field-strip-drawer');
+    if (existing && existing.dataset.alpha === ctx.alphaId && existing.dataset.done === '1'
+        && ctx.heading.parentElement.contains(existing)) {
+        return;
+    }
+    if (drawerStripBuilding) return;
+    drawerStripBuilding = true;
+    try {
+        removeAlphaStrips();
+        const strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip-drawer';
+        strip.dataset.alpha = ctx.alphaId;
+        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+        ctx.heading.parentNode.insertBefore(strip, ctx.heading.nextSibling);
+        console.log('[WQP] 抽屉字段条已挂载:', ctx.alphaId);
+
+        const code = await fetchAlphaExpression(ctx.alphaId);
+        if (!strip.isConnected) return;
+        strip.querySelector('.wqp-strip-status')?.remove();
+        strip.appendChild(await buildChipsForCode(code));
+        strip.dataset.done = '1';
+    } finally {
+        drawerStripBuilding = false;
+    }
+}
+
 let observeTimer = null;
 let mainPassRunning = false;
 async function mainPass() {
@@ -380,7 +430,7 @@ async function mainPass() {
         } else if (getAlphaIdFromUrl()) {
             await updateAlphaStrip();
         } else {
-            await updateCodeBlockStrips();
+            await updateDrawerStrip();
         }
     } catch (error) {
         console.error('[WQP] fieldUsageFlag 轮询异常:', error);

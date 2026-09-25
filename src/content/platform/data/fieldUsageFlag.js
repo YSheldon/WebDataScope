@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.5 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.7 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -435,10 +435,10 @@ async function updateDrawerStrip() {
         return;
     }
 
-    // 条挂在 body 层绝对定位到 Code 标题正下方: React 重渲染碰不到,位置每轮校正
+    // 条挂在 body 层绝对定位到 Code 标题右侧同行: React 重渲染碰不到,也不遮挡代码块
     const rect = ctx.heading.getBoundingClientRect();
-    const top = `${window.scrollY + rect.bottom + 6}px`;
-    const left = `${window.scrollX + rect.left}px`;
+    const top = `${window.scrollY + rect.top - 2}px`;
+    const left = `${window.scrollX + rect.right + 12}px`;
 
     if (existing && existing.dataset.alpha !== ctx.alphaId) {
         existing.remove();
@@ -455,7 +455,7 @@ async function updateDrawerStrip() {
     }
     strip.style.top = top;
     strip.style.left = left;
-    strip.style.maxWidth = `${Math.max(320, Math.round(rect.width))}px`;
+    strip.style.maxWidth = '420px';
     if (existing && existing.dataset.done !== '1' && drawerStripBuilding) return; // 上一轮还在构建,只校正位置
 
     if (existing.dataset.done === '1') return;

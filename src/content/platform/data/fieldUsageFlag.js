@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.4 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.5 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -123,6 +123,21 @@ async function updateDetailBanner() {
 const ALPHA_STOPWORDS = new Set(['true', 'false', 'nan', 'and', 'or', 'not', 'if', 'else']);
 const RESERVED_IDS = new Set(['unsubmitted', 'submitted', 'distribution']);
 let alphaStripBuilding = false;
+
+function alphaIdFromHref(href) {
+    const match = String(href || '').match(/\/alpha\/([^/?#]+)/);
+    const id = match ? decodeURIComponent(match[1]) : '';
+    return id && !RESERVED_IDS.has(id.toLowerCase()) ? id : '';
+}
+
+function findAlphaIdInNode(node) {
+    const link = node.querySelector('a[href*="/alpha/"]');
+    const fromLink = alphaIdFromHref(link?.href);
+    if (fromLink) return fromLink;
+    const match = (node.innerText || '').match(/Alpha ID\s*[:：]?\s*([A-Za-z0-9]{5,12})/i);
+    if (match && !RESERVED_IDS.has(match[1].toLowerCase())) return match[1];
+    return '';
+}
 
 function getAlphaIdFromUrl() {
     const match = location.href.match(/\/alpha\/([^/?#]+)/);
@@ -403,8 +418,17 @@ function findVisibleCodeBox(panel, code) {
 
 let drawerStripBuilding = false;
 async function updateDrawerStrip() {
-    const ctx = findDrawerAlphaContext();
+    let ctx = findDrawerAlphaContext();
     const existing = document.getElementById('wqp-alpha-field-strip-drawer');
+    if (!ctx) {
+        // 整页 /alpha/{id} 但页面没有 Monaco 编辑器: 用 URL ID + 可见的 Code 标题锚定
+        const urlId = getAlphaIdFromUrl();
+        if (urlId) {
+            const heading = [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
+                .find((h) => h.textContent.trim() === 'Code' && h.getClientRects().length > 0);
+            if (heading) ctx = { alphaId: urlId, heading, panel: document.body };
+        }
+    }
     if (!ctx) {
         if (existing) existing.remove();
         await updateCodeBlockStrips();
@@ -462,7 +486,7 @@ async function mainPass() {
         flagVisibleRows();
         if (getFieldIdFromUrl()) {
             await updateDetailBanner();
-        } else if (getAlphaIdFromUrl()) {
+        } else if (getAlphaIdFromUrl() && document.querySelector('.monaco-editor')) {
             await updateAlphaStrip();
         } else {
             await updateDrawerStrip();

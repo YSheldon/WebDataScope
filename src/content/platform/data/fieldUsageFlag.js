@@ -204,82 +204,111 @@ function alphaStripChip(token, usage) {
     return chip;
 }
 
-function findModalAlphaContext() {
-    // 列表页点开详情是页内弹窗,URL 不带 /alpha/{id},从弹窗内容里找 Alpha ID
-    const dialogs = [...document.querySelectorAll('.ui.modal, [role="dialog"]')]
-        .filter((dialog) => dialog.offsetParent !== null && dialog.querySelector('.monaco-editor'));
-    for (const dialog of dialogs) {
-        let alphaId = '';
-        const link = dialog.querySelector('a[href*="/alpha/"]');
-        if (link?.href) {
-            const match = link.href.match(/\/alpha\/([^/?#]+)/);
-            if (match) alphaId = decodeURIComponent(match[1]);
-        }
-        if (!alphaId) {
-            const match = (dialog.innerText || '').match(/Alpha ID\s*[:：]?\s*([A-Za-z0-9]{5,12})/i);
-            if (match) alphaId = match[1];
-        }
-        if (alphaId && !['unsubmitted', 'submitted', 'distribution'].includes(alphaId.toLowerCase())) {
-            return { alphaId, editor: dialog.querySelector('.monaco-editor') };
-        }
-    }
-    return null;
+const RESERVED_IDS = new Set(['unsubmitted', 'submitted', 'distribution']);
+
+function alphaIdFromHref(href) {
+    const match = String(href || '').match(/\/alpha\/([^/?#]+)/);
+    const id = match ? decodeURIComponent(match[1]) : '';
+    return id && !RESERVED_IDS.has(id.toLowerCase()) ? id : '';
 }
 
-async function updateAlphaFieldStrip() {
-    let alphaId = getAlphaIdFromUrl();
-    let editor = alphaId ? document.querySelector('.monaco-editor') : null;
-    if (!alphaId || !editor) {
-        const modal = findModalAlphaContext();
-        if (modal) {
-            alphaId = modal.alphaId;
-            editor = modal.editor;
+function findAlphaIdInNode(node) {
+    const link = node.querySelector('a[href*="/alpha/"]');
+    const fromLink = alphaIdFromHref(link?.href);
+    if (fromLink) return fromLink;
+    const match = (node.innerText || '').match(/Alpha ID\s*[:：]?\s*([A-Za-z0-9]{5,12})/i);
+    if (match && !RESERVED_IDS.has(match[1].toLowerCase())) return match[1];
+    return '';
+}
+
+function resolveAlphaContexts() {
+    const contexts = [];
+    const urlId = getAlphaIdFromUrl();
+    if (urlId) {
+        contexts.push({
+            alphaId: urlId,
+            editor: document.querySelector('.monaco-editor'),
+            dialog: null,
+        });
+        return contexts;
+    }
+    const dialogs = [...document.querySelectorAll('.ui.modal, [role="dialog"], .modal')]
+        .filter((dialog) => dialog.getClientRects().length > 0);
+    for (const dialog of dialogs) {
+        const alphaId = findAlphaIdInNode(dialog);
+        if (alphaId) {
+            contexts.push({ alphaId, editor: dialog.querySelector('.monaco-editor'), dialog });
         }
     }
-    if (!alphaId || !editor) return;
+    return contexts;
+}
 
-    let strip = document.getElementById('wqp-alpha-field-strip');
-    const anchor = editor.closest('div[class*="container"], section, div') || editor;
-    if (strip && !anchor.contains(strip) && strip.parentNode !== anchor.parentNode) {
-        strip.remove();
-        strip = null;
-    }
-    if (alphaId === ALPHA_STRIP_STATE.alphaId && strip) return;
+function stripHostNodeId(alphaId) {
+    return `wqp-alpha-field-strip-${alphaId}`;
+}
 
-    if (!strip) {
-        strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip';
-        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-        strip.innerHTML = '<b style="color:#57606a;">字段使用:</b> 分析中...';
-        anchor.parentNode.insertBefore(strip, anchor);
-    }
-    ALPHA_STRIP_STATE.alphaId = alphaId;
-    strip.querySelectorAll('.wqp-alpha-chips').forEach((chip) => chip.remove());
+let stripBuilding = '';
 
-    const code = await fetchAlphaExpression(alphaId);
-    if (getAlphaIdFromUrl() !== alphaId && !document.body.contains(editor)) return;
-    const tokens = extractFieldTokens(code || '');
-    const chips = document.createElement('span');
-    chips.className = 'wqp-alpha-chips';
-    chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
-    strip.appendChild(chips);
+async function updateAlphaFieldStrip() {
+    const contexts = resolveAlphaContexts();
+    const currentIds = new Set(contexts.map((ctx) => ctx.alphaId));
 
-    let newCount = 0;
-    let usedCount = 0;
-    for (const token of tokens) {
-        const isField = await verifyFieldToken(token);
-        if (!isField) continue;
-        const usage = await usageOf(token);
-        if (usage.count) usedCount += 1; else newCount += 1;
-        chips.appendChild(alphaStripChip(token, usage));
-    }
-    if (!chips.childElementCount) {
-        chips.innerHTML = '<span style="color:#57606a;">未在表达式中识别到数据字段</span>';
-    } else {
-        const summary = document.createElement('span');
-        summary.style.cssText = 'margin-left:4px; color:#57606a;';
-        summary.textContent = `— 共 ${newCount + usedCount} 个字段: 新 ${newCount} / 已用 ${usedCount}`;
-        chips.appendChild(summary);
+    // 清理已失效的条(弹窗关闭/切换 alpha)
+    document.querySelectorAll('[id^="wqp-alpha-field-strip-"]').forEach((old) => {
+        if (!currentIds.has(old.dataset.alpha)) old.remove();
+    });
+    if (stripBuilding && !currentIds.has(stripBuilding)) stripBuilding = '';
+
+    for (const ctx of contexts) {
+        const stripId = stripHostNodeId(ctx.alphaId);
+        let strip = document.getElementById(stripId);
+        if (!strip) {
+            strip = document.createElement('div');
+            strip.id = stripId;
+            strip.dataset.alpha = ctx.alphaId;
+            strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+            strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+            if (ctx.editor) {
+                const anchor = ctx.editor.closest('div[class*="container"], section, div') || ctx.editor;
+                anchor.parentNode.insertBefore(strip, anchor);
+            } else if (ctx.dialog) {
+                ctx.dialog.prepend(strip);
+            } else {
+                (document.querySelector('main') || document.body).prepend(strip);
+            }
+            console.log('[WQP] 字段使用条已挂载:', ctx.alphaId, ctx.editor ? '(编辑器上方)' : '(弹窗顶部)');
+        }
+        if (stripBuilding === ctx.alphaId || strip.querySelector('.wqp-alpha-chips')) continue;
+
+        stripBuilding = ctx.alphaId;
+        const status = strip.querySelector('.wqp-strip-status');
+        const code = await fetchAlphaExpression(ctx.alphaId);
+        if (!document.getElementById(stripId)) { stripBuilding = ''; return; }
+        const tokens = extractFieldTokens(code || '');
+        const chips = document.createElement('span');
+        chips.className = 'wqp-alpha-chips';
+        chips.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;';
+        strip.appendChild(chips);
+
+        let newCount = 0;
+        let usedCount = 0;
+        for (const token of tokens) {
+            const isField = await verifyFieldToken(token);
+            if (!isField) continue;
+            const usage = await usageOf(token);
+            if (usage.count) usedCount += 1; else newCount += 1;
+            chips.appendChild(alphaStripChip(token, usage));
+        }
+        status?.remove();
+        if (!chips.childElementCount) {
+            chips.innerHTML = '<span style="color:#57606a;">未在表达式中识别到数据字段</span>';
+        } else {
+            const summary = document.createElement('span');
+            summary.style.cssText = 'margin-left:4px; color:#57606a;';
+            summary.textContent = `— 共 ${newCount + usedCount} 个字段: 新 ${newCount} / 已用 ${usedCount}`;
+            chips.appendChild(summary);
+        }
+        stripBuilding = '';
     }
 }
 

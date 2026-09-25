@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.8.7 loaded');
+console.log('[WQP] fieldUsageFlag v1.8.9 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -222,7 +222,8 @@ function locateAlphaAnchor() {
         for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
             let best = null;
             for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
-                if (candidate.closest('.monaco-editor')) continue;
+                // 排除自己生成的条,否则条会把自己当代码块,永远显示旧字段
+                if (candidate.closest('.monaco-editor, .wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
                 const text = (candidate.innerText || '').trim();
                 if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
                 if (!best || text.length < best.innerText.trim().length) best = candidate;
@@ -299,7 +300,7 @@ function findCodeBlocks() {
         for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
             let best = null;
             for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
-                if (candidate.closest('.monaco-editor')) continue;
+                if (candidate.closest('.monaco-editor, .wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
                 const text = (candidate.innerText || '').trim();
                 if (text.length < 8 || !text.includes('(') || !/[A-Za-z_]/.test(text)) continue;
                 if (!best || text.length < best.innerText.trim().length) best = candidate;

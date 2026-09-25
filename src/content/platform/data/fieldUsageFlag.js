@@ -204,31 +204,60 @@ function alphaStripChip(token, usage) {
     return chip;
 }
 
+function findModalAlphaContext() {
+    // 列表页点开详情是页内弹窗,URL 不带 /alpha/{id},从弹窗内容里找 Alpha ID
+    const dialogs = [...document.querySelectorAll('.ui.modal, [role="dialog"]')]
+        .filter((dialog) => dialog.offsetParent !== null && dialog.querySelector('.monaco-editor'));
+    for (const dialog of dialogs) {
+        let alphaId = '';
+        const link = dialog.querySelector('a[href*="/alpha/"]');
+        if (link?.href) {
+            const match = link.href.match(/\/alpha\/([^/?#]+)/);
+            if (match) alphaId = decodeURIComponent(match[1]);
+        }
+        if (!alphaId) {
+            const match = (dialog.innerText || '').match(/Alpha ID\s*[:：]?\s*([A-Za-z0-9]{5,12})/i);
+            if (match) alphaId = match[1];
+        }
+        if (alphaId && !['unsubmitted', 'submitted', 'distribution'].includes(alphaId.toLowerCase())) {
+            return { alphaId, editor: dialog.querySelector('.monaco-editor') };
+        }
+    }
+    return null;
+}
+
 async function updateAlphaFieldStrip() {
-    const alphaId = getAlphaIdFromUrl();
-    if (!alphaId) return;
-    if (alphaId === ALPHA_STRIP_STATE.alphaId
-        && document.getElementById('wqp-alpha-field-strip')) return;
+    let alphaId = getAlphaIdFromUrl();
+    let editor = alphaId ? document.querySelector('.monaco-editor') : null;
+    if (!alphaId || !editor) {
+        const modal = findModalAlphaContext();
+        if (modal) {
+            alphaId = modal.alphaId;
+            editor = modal.editor;
+        }
+    }
+    if (!alphaId || !editor) return;
 
     let strip = document.getElementById('wqp-alpha-field-strip');
+    const anchor = editor.closest('div[class*="container"], section, div') || editor;
+    if (strip && !anchor.contains(strip) && strip.parentNode !== anchor.parentNode) {
+        strip.remove();
+        strip = null;
+    }
+    if (alphaId === ALPHA_STRIP_STATE.alphaId && strip) return;
+
     if (!strip) {
-        const editor = document.querySelector('.monaco-editor');
-        if (!editor) return; // 页面还没渲染出表达式,等下一轮
         strip = document.createElement('div');
         strip.id = 'wqp-alpha-field-strip';
         strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
         strip.innerHTML = '<b style="color:#57606a;">字段使用:</b> 分析中...';
-        const anchor = editor.closest('div[class*="container"], section, div') || editor;
         anchor.parentNode.insertBefore(strip, anchor);
     }
-    if (alphaId !== ALPHA_STRIP_STATE.alphaId) {
-        ALPHA_STRIP_STATE.alphaId = alphaId;
-        strip.querySelector('.wqp-alpha-chips')?.remove();
-        strip.querySelectorAll('.wqp-alpha-chip').forEach((chip) => chip.remove());
-    }
+    ALPHA_STRIP_STATE.alphaId = alphaId;
+    strip.querySelectorAll('.wqp-alpha-chips').forEach((chip) => chip.remove());
 
     const code = await fetchAlphaExpression(alphaId);
-    if (getAlphaIdFromUrl() !== alphaId) return;
+    if (getAlphaIdFromUrl() !== alphaId && !document.body.contains(editor)) return;
     const tokens = extractFieldTokens(code || '');
     const chips = document.createElement('span');
     chips.className = 'wqp-alpha-chips';

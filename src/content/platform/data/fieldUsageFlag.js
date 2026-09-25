@@ -245,14 +245,28 @@ async function updateAlphaStrip() {
         removeAlphaStrips();
         return;
     }
+    const anchor = locateAlphaAnchor();
+
+    // 根部降级不挂载: 等 Code 块/Monaco 渲染出来再挂,避免条出现在页首
+    if (anchor.mode === 'main') {
+        return;
+    }
+
     const existing = document.getElementById('wqp-alpha-field-strip');
-    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1') return;
+    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1') {
+        // 内容已就绪: 若出现了更贴切的锚点位置,把条搬过去
+        if (anchor.mode === 'after-code-block' && existing.previousElementSibling !== anchor.node) {
+            anchor.node.parentNode.insertBefore(existing, anchor.node.nextSibling);
+        } else if (anchor.mode === 'before-monaco' && anchor.node.previousElementSibling !== existing) {
+            anchor.node.parentNode.insertBefore(existing, anchor.node);
+        }
+        return;
+    }
 
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
         removeAlphaStrips();
-        const anchor = locateAlphaAnchor();
         const strip = document.createElement('div');
         strip.id = 'wqp-alpha-field-strip';
         strip.dataset.alpha = alphaId;
@@ -260,10 +274,8 @@ async function updateAlphaStrip() {
         strip.innerHTML = `<b style="color:#57606a;">字段使用 (${alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
         if (anchor.mode === 'after-code-block') {
             anchor.node.parentNode.insertBefore(strip, anchor.node.nextSibling);
-        } else if (anchor.mode === 'before-monaco') {
-            anchor.node.parentNode.insertBefore(strip, anchor.node);
         } else {
-            anchor.node.prepend(strip);
+            anchor.node.parentNode.insertBefore(strip, anchor.node);
         }
         console.log('[WQP] 字段使用条已挂载:', alphaId, anchor.mode);
 

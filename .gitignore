@@ -26,6 +26,7 @@ telemetry-worker/.wrangler/
 telemetry-worker/.dev.vars*
 telemetry-worker/.generated-secrets.json
 telemetry-worker/.admin-credentials.txt
+scripts/extracted/
 telemetry-worker/README.md
 pnl-share-worker/.wrangler/
 pnl-share-worker/.dev.vars*

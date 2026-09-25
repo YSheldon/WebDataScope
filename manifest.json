@@ -39,6 +39,7 @@
                 "src/content/shared/utils.js",
                 "src/content/shared/uiCard.js",
                 "src/content/platform/data/dataAna.js",
+                "src/content/platform/data/fieldUsageFlag.js",
                 "src/content/platform/common/noMoreDifficulties.js",
                 "src/content/shared/requestMonitorUI.js"
             ],

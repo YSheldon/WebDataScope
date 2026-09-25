@@ -325,8 +325,9 @@ function findCodeBlocks() {
         heading.parentElement?.appendChild(miss);
         console.warn('[WQP] Code 标题下未找到代码块', heading);
     }
-    // 隐藏的重复渲染节点不出条
-    return [...new Set(boxes)].filter((box) => box.getClientRects().length > 0);
+    // 隐藏的重复渲染节点不出条; 嵌套命中的只保留最外层代码块
+    const unique = [...new Set(boxes)].filter((box) => box.getClientRects().length > 0);
+    return unique.filter((box) => !unique.some((other) => other !== box && other.contains(box)));
 }
 
 function findExprBoxUnder(node) {

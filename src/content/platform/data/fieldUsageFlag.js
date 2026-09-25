@@ -325,7 +325,8 @@ function findCodeBlocks() {
         heading.parentElement?.appendChild(miss);
         console.warn('[WQP] Code 标题下未找到代码块', heading);
     }
-    return [...new Set(boxes)];
+    // 隐藏的重复渲染节点不出条
+    return [...new Set(boxes)].filter((box) => box.getClientRects().length > 0);
 }
 
 function findExprBoxUnder(node) {
@@ -379,9 +380,12 @@ async function updateCodeBlockStrips() {
 async function updateAlphaFieldStrip() {
     const urlId = getAlphaIdFromUrl();
     if (urlId && document.querySelector('.monaco-editor')) {
+        // 整页 Monaco 路径生效时,清理代码块路径的条,避免重复
+        document.querySelectorAll('.wqp-code-strip').forEach((strip) => strip.remove());
         await updateUrlPageStrip(urlId);
         return;
     }
+    document.getElementById('wqp-alpha-field-strip-page')?.remove();
     await updateCodeBlockStrips();
 }
 

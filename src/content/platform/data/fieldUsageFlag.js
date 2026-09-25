@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.9.0 loaded');
+console.log('[WQP] fieldUsageFlag v1.9.1 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -160,9 +160,14 @@ function extractFieldTokens(code) {
 }
 
 const fieldTokenCache = new Map();
+const NEG_TTL = 30000; // 否定结果只缓存30秒,翻页限流时不至于永久误判
 
 async function verifyFieldToken(token) {
-    if (fieldTokenCache.has(token)) return fieldTokenCache.get(token);
+    const cached = fieldTokenCache.get(token);
+    if (cached) {
+        if (cached.ok) return true;
+        if (Date.now() - cached.at < NEG_TTL) return false;
+    }
     let isField = false;
     try {
         const response = await fetch(`https://api.worldquantbrain.com/data-fields/${encodeURIComponent(token)}`, {
@@ -172,7 +177,7 @@ async function verifyFieldToken(token) {
     } catch (_) {
         isField = false;
     }
-    fieldTokenCache.set(token, isField);
+    fieldTokenCache.set(token, { ok: isField, at: Date.now() });
     return isField;
 }
 
@@ -225,6 +230,8 @@ function locateAlphaAnchor() {
                 // 排除自己生成的条,否则条会把自己当代码块,永远显示旧字段
                 if (candidate.closest('.monaco-editor, .wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
                 const text = (candidate.innerText || '').trim();
+                // "Code" 标题自身的 class 往往也含 code 字样,必须排除
+                if (/^code$/i.test(text)) continue;
                 // 裸字段表达式没有括号,只要求含标识符
                 if (text.length < 4 || !/[A-Za-z_]/.test(text)) continue;
                 if (!best || text.length < best.innerText.trim().length) best = candidate;
@@ -303,6 +310,7 @@ function findCodeBlocks() {
             for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
                 if (candidate.closest('.monaco-editor, .wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
                 const text = (candidate.innerText || '').trim();
+                if (/^code$/i.test(text)) continue;
                 if (text.length < 4 || !/[A-Za-z_]/.test(text)) continue;
                 if (!best || text.length < best.innerText.trim().length) best = candidate;
             }

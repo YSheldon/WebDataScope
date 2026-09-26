@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.0 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.1 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -237,78 +237,72 @@ function removeAlphaStrips() {
     document.querySelectorAll('[id^="wqp-alpha-field-strip"]').forEach((strip) => strip.remove());
 }
 
-// 锚点优先级: Code 标题下的代码块(插其下方) > Monaco(插其上方) > main(插顶部)
-function locateAlphaAnchor() {
-    for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
-        if (heading.textContent.trim() !== 'Code') continue;
+// 统一路径: 整页 /alpha/{id} 与列表抽屉都走这里。
+// 占位策略(用户建议): 页面加载即在 Code 标题后占位,表达式就绪后填充;
+// 文本反查定位到代码块时,占位条下移到代码块下方。
+function findVisibleCodeHeadings() {
+    return [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
+        .filter((h) => h.textContent.trim() === 'Code' && h.getClientRects().length > 0);
+}
+
+function resolveAlphaId(headings) {
+    const urlId = getAlphaIdFromUrl();
+    if (urlId) return urlId;
+    for (const heading of headings) {
         let node = heading.parentElement;
-        for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
-            let best = null;
-            for (const candidate of node.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
-                // 排除自己生成的条,否则条会把自己当代码块,永远显示旧字段
-                if (candidate.closest('.monaco-editor, .wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
-                const text = (candidate.innerText || '').trim();
-                // "Code" 标题自身的 class 往往也含 code 字样,必须排除
-                if (/^code$/i.test(text)) continue;
-                // 裸字段表达式没有括号,只要求含标识符
-                if (text.length < 4 || !/[A-Za-z_]/.test(text)) continue;
-                if (!best || text.length < best.innerText.trim().length) best = candidate;
-            }
-            if (best && best.getClientRects().length > 0) {
-                return { mode: 'after-code-block', node: best };
-            }
+        for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+            const link = node.querySelector('a[href*="/alpha/"]');
+            const id = alphaIdFromHref(link?.href);
+            if (id) return id;
         }
     }
-    const editor = document.querySelector('.monaco-editor');
-    if (editor) {
-        return { mode: 'before-monaco', node: editor.closest('div[class*="container"], section, div') || editor };
-    }
-    return { mode: 'main', node: document.querySelector('main') || document.body };
+    return '';
 }
 
 async function updateAlphaStrip() {
-    const alphaId = getAlphaIdFromUrl();
-    if (!alphaId) {
+    const headings = findVisibleCodeHeadings();
+    const alphaId = resolveAlphaId(headings);
+    if (!alphaId || !headings.length) {
         removeAlphaStrips();
+        await updateCodeBlockStrips();
         return;
     }
-    const anchor = locateAlphaAnchor();
-
-    // 根部降级不挂载: 等 Code 块/Monaco 渲染出来再挂,避免条出现在页首
-    if (anchor.mode === 'main') {
-        return;
-    }
+    const heading = headings[0];
 
     const existing = document.getElementById('wqp-alpha-field-strip');
-    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1') {
-        // 内容已就绪: 若出现了更贴切的锚点位置,把条搬过去
-        if (anchor.mode === 'after-code-block' && existing.previousElementSibling !== anchor.node) {
-            anchor.node.parentNode.insertBefore(existing, anchor.node.nextSibling);
-        } else if (anchor.mode === 'before-monaco' && anchor.node.previousElementSibling !== existing) {
-            anchor.node.parentNode.insertBefore(existing, anchor.node);
-        }
-        return;
+    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1' && existing.isConnected) {
+        return; // 占位与内容均已就绪
     }
-
+    if (existing && existing.dataset.alpha !== alphaId) existing.remove();
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
-        removeAlphaStrips();
-        const strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip';
-        strip.dataset.alpha = alphaId;
-        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-        if (anchor.mode === 'after-code-block') {
-            anchor.node.parentNode.insertBefore(strip, anchor.node.nextSibling);
-        } else {
-            anchor.node.parentNode.insertBefore(strip, anchor.node);
+        // 占位: Code 标题正下方,加载即出现
+        let strip = document.getElementById('wqp-alpha-field-strip');
+        if (!strip || !strip.isConnected) {
+            removeAlphaStrips();
+            strip = document.createElement('div');
+            strip.id = 'wqp-alpha-field-strip';
+            strip.dataset.alpha = alphaId;
+            strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
+            strip.innerHTML = `<b style="color:#57606a;">字段使用 (${alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
+            insertAfterHeading(strip, heading);
+            console.log('[WQP] 字段使用条已占位:', alphaId);
         }
-        console.log('[WQP] 字段使用条已挂载:', alphaId, anchor.mode);
-
         const code = await fetchAlphaExpression(alphaId);
-        if (!strip.isConnected || getAlphaIdFromUrl() !== alphaId) return; // 已被下一轮接管
+        if (!strip.isConnected) return;
+        if (!code) {
+            const status = strip.querySelector('.wqp-strip-status');
+            if (status) status.textContent = '表达式获取失败,将自动重试...';
+            return; // done 未标记,下一轮重试
+        }
+        // 表达式就绪: 文本反查定位代码块时,占位条下移到代码块下方
+        const box = findCodeBoxByText(code);
+        if (box && box.parentNode) {
+            box.parentNode.insertBefore(strip, box.nextSibling);
+        }
         strip.querySelector('.wqp-strip-status')?.remove();
+        strip.querySelector('.wqp-alpha-chips')?.remove();
         strip.appendChild(await buildChipsForCode(code));
         strip.dataset.done = '1';
     } finally {
@@ -386,36 +380,6 @@ async function updateCodeBlockStrips() {
 
 // ---------- 主循环 ----------
 
-// 无 /alpha/{id} URL 时(列表详情抽屉): 从 Code 标题向上找面板里的 alpha 链接,
-// 表达式一律取 API,条按"包含表达式文本"反查到的可视代码块定位
-function findDrawerAlphaContext() {
-    for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
-        if (heading.textContent.trim() !== 'Code') continue;
-        if (heading.getClientRects().length === 0) continue;
-        let node = heading.parentElement;
-        for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
-            const link = node.querySelector('a[href*="/alpha/"]');
-            const alphaId = alphaIdFromHref(link?.href) || findAlphaIdInNode(node);
-            if (alphaId) return { alphaId, heading, panel: node };
-        }
-    }
-    return null;
-}
-
-function findVisibleCodeBox(panel, code) {
-    const snippet = (code || '').replace(/\s+/g, ' ').trim().slice(0, 30);
-    if (!snippet) return null;
-    let best = null;
-    for (const candidate of panel.querySelectorAll('pre, code, [class*="code" i], [class*="expression" i]')) {
-        if (candidate.closest('.wqp-code-strip, [id^="wqp-alpha-field-strip"], .wqp-alpha-chips')) continue;
-        if (candidate.getClientRects().length === 0) continue;
-        const text = (candidate.innerText || '').replace(/\s+/g, ' ');
-        if (!text.includes(snippet)) continue;
-        if (!best || text.length < best.innerText.replace(/\s+/g, ' ').length) best = candidate;
-    }
-    return best;
-}
-
 // 表达式文本 XPath 全页反查: 不依赖类名。取最内层命中后,
 // 沿「父级新增文本很少则继续上溯」爬到代码区块边界,条插在该区块之后
 function findCodeBoxByText(code) {
@@ -455,59 +419,6 @@ function findCodeBoxByText(code) {
     return node;
 }
 
-let drawerStripBuilding = false;
-async function updateDrawerStrip() {
-    let ctx = findDrawerAlphaContext();
-    const existing = document.getElementById('wqp-alpha-field-strip-drawer');
-    if (!ctx) {
-        // 整页 /alpha/{id} 但页面没有 Monaco 编辑器: 用 URL ID + 可见的 Code 标题锚定
-        const urlId = getAlphaIdFromUrl();
-        if (urlId) {
-            const heading = [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
-                .find((h) => h.textContent.trim() === 'Code' && h.getClientRects().length > 0);
-            if (heading) ctx = { alphaId: urlId, heading, panel: document.body };
-        }
-    }
-    if (!ctx) {
-        if (existing) existing.remove();
-        await updateCodeBlockStrips();
-        return;
-    }
-
-    // 嵌入文档流: Code 标题与代码块之间;内容正确时不再动它
-    if (existing && existing.dataset.alpha === ctx.alphaId && existing.dataset.done === '1' && existing.isConnected) {
-        return;
-    }
-    if (existing && existing.dataset.alpha !== ctx.alphaId) existing.remove();
-    if (drawerStripBuilding) return;
-    drawerStripBuilding = true;
-    try {
-        // 先取表达式再插入,内容一次性就位
-        const code = await fetchAlphaExpression(ctx.alphaId);
-        if (!code) return;
-        removeAlphaStrips();
-        const strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip-drawer';
-        strip.dataset.alpha = ctx.alphaId;
-        strip.dataset.code = code;
-        strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用 (${ctx.alphaId}):</b> `;
-        strip.appendChild(await buildChipsForCode(code));
-        // 锚点: 类名选择器先试,失败则用表达式文本 XPath 全页反查(不依赖类名)
-        const box = findVisibleCodeBox(document.body, code) || findCodeBoxByText(code);
-        if (box) {
-            box.parentNode.insertBefore(strip, box.nextSibling);
-            console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId, '(代码块下方)');
-        } else {
-            insertAfterHeading(strip, ctx.heading);
-            console.log('[WQP] 抽屉字段条已嵌入:', ctx.alphaId, '(标题下方,未反查到代码块)');
-        }
-        strip.dataset.done = '1';
-    } finally {
-        drawerStripBuilding = false;
-    }
-}
-
 // 嵌入到 Code 标题之后(标题和代码块之间);标题是父容器末尾时上提一层
 function insertAfterHeading(strip, heading) {
     if (heading.nextElementSibling) {
@@ -530,10 +441,10 @@ async function mainPass() {
         flagVisibleRows();
         if (getFieldIdFromUrl()) {
             await updateDetailBanner();
-        } else if (getAlphaIdFromUrl() && document.querySelector('.monaco-editor')) {
+        } else if (findVisibleCodeHeadings().length > 0) {
             await updateAlphaStrip();
         } else {
-            await updateDrawerStrip();
+            await updateCodeBlockStrips();
         }
     } catch (error) {
         console.error('[WQP] fieldUsageFlag 轮询异常:', error);

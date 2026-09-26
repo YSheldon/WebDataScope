@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.6 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.7 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -316,6 +316,8 @@ async function updateAlphaStrip() {
 function findCodeBlocks() {
     const boxes = [];
     for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')) {
+        // 只认可见的 Code 标题: 隐藏面板(多模拟的其他 tab)不参与
+        if (heading.getClientRects().length === 0) continue;
         if (heading.textContent.trim() !== 'Code') continue;
         let node = heading.parentElement;
         for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
@@ -440,8 +442,14 @@ async function mainPass() {
     mainPassRunning = true;
     try {
         flagVisibleRows();
+        // 字段使用标记只在 alpha 相关页面运行(/alpha/{id} 整页、/alphas 列表+抽屉);
+        // 其他页面(/simulate 等)一律清场,防止兜底路径在无关页面开花
+        const isAlphaPage = /^\/alphas?(\/|$)/.test(location.pathname);
         if (getFieldIdFromUrl()) {
             await updateDetailBanner();
+        } else if (!isAlphaPage) {
+            removeAlphaStrips();
+            document.querySelectorAll('.wqp-code-strip').forEach((strip) => strip.remove());
         } else if (findVisibleCodeHeadings().length > 0) {
             await updateAlphaStrip();
         } else {

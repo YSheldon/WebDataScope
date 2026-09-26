@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.5 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.6 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -238,13 +238,12 @@ function removeAlphaStrips() {
 }
 
 // 统一路径: 整页 /alpha/{id} 与列表抽屉都走这里。
-// 位置不变量: 条嵌在 Code 标题所在行的父容器末尾(「Code」文字右侧同一行)。
-// 检测用「直接文本节点 === 'Code'」: 条是行容器的子元素而非标题的子元素,
-// 不会污染标题 textContent,检测稳定 → 不闪烁。
+// 检测用 startsWith('Code'): 条插入后文本变为 "Code字段使用…" 仍能匹配,
+// 检测不失效 → 无污染级联;按文本最短排序取最内层标题,外层包装 div 不干扰。
 function findVisibleCodeHeadings() {
     return [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
-        .filter((h) => h.getClientRects().length > 0
-            && [...h.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim() === 'Code'));
+        .filter((h) => h.getClientRects().length > 0 && h.textContent.trim().startsWith('Code'))
+        .sort((a, b) => a.textContent.length - b.textContent.length); // 最内层优先
 }
 
 function resolveAlphaId(headings) {

@@ -13,7 +13,7 @@ const knownExternal = new Set([
     'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'new',
     'typeof', 'await', 'else', 'do',
     'Map', 'Set', 'WeakMap', 'WeakSet', 'Array', 'Object', 'JSON',
-    'Monaco', 'rgba', 'b', 'contains', 'space', 'normalize', 'code', 'expression', 'alpha', 'Code',
+    'Monaco', 'rgba', 'b', 'contains', 'space', 'normalize', 'startsWith', 'trim', 'includes', 'replace', 'slice', 'closest', 'appendChild', 'remove', 'code', 'expression', 'alpha', 'Code',
 ]);
 let bad = 0;
 for (const fn of calls) {

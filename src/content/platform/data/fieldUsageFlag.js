@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.3 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.4 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -277,22 +277,35 @@ async function updateAlphaStrip() {
         && existing.isConnected && existing.parentElement === headingRow) {
         return; // 已在当前标题行右侧,内容就绪
     }
-    if (existing) existing.remove(); // 位置不对/换了 alpha/被重渲染移除 → 重建
+    if (existing && (existing.dataset.alpha !== alphaId || existing.dataset.done === '1')) {
+        existing.remove(); // 换了 alpha,或上次已失败重试过 → 重建占位
+    }
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
+        // 立即占位显示「正在分析」,表达式就绪后原位填充
+        let strip = document.getElementById('wqp-alpha-field-strip');
+        if (!strip || !strip.isConnected) {
+            removeAlphaStrips();
+            strip = document.createElement('div');
+            strip.id = 'wqp-alpha-field-strip';
+            strip.dataset.alpha = alphaId;
+            strip.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:12px; padding:3px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; vertical-align:middle;';
+            strip.innerHTML = `<b style="color:#57606a;">字段使用:</b> <span class="wqp-strip-status">正在分析...</span>`;
+            headingRow.appendChild(strip);
+        } else if (strip.parentElement !== headingRow) {
+            headingRow.appendChild(strip); // 跟随当前标题行
+        }
         const code = await fetchAlphaExpression(alphaId);
-        if (!code) return;
-        removeAlphaStrips();
-        const strip = document.createElement('div');
-        strip.id = 'wqp-alpha-field-strip';
-        strip.dataset.alpha = alphaId;
-        // inline-flex 嵌入标题行内,不换行不遮挡
-        strip.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:12px; padding:3px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; vertical-align:middle;';
-        strip.innerHTML = `<b style="color:#57606a;">字段使用:</b> `;
+        if (!strip.isConnected) return;
+        if (!code) {
+            const status = strip.querySelector('.wqp-strip-status');
+            if (status) status.textContent = '表达式获取失败,将自动重试...';
+            return; // done 未标记,下一轮重试
+        }
+        strip.querySelector('.wqp-strip-status')?.remove();
+        strip.querySelector('.wqp-alpha-chips')?.remove();
         strip.appendChild(await buildChipsForCode(code));
-        headingRow.appendChild(strip);
-        console.log('[WQP] 字段使用条已嵌入 Code 标题行:', alphaId);
         strip.dataset.done = '1';
     } finally {
         alphaStripBuilding = false;

@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.2 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.3 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -238,11 +238,13 @@ function removeAlphaStrips() {
 }
 
 // 统一路径: 整页 /alpha/{id} 与列表抽屉都走这里。
-// 位置不变量: 条嵌在 Code 标题行内部(「Code」文字右侧)。
-// 标题行独占一行且右边为空,grid/flex 重排、DOM 顺序都不影响它的显示位置。
+// 位置不变量: 条嵌在 Code 标题所在行的父容器末尾(「Code」文字右侧同一行)。
+// 检测用「直接文本节点 === 'Code'」: 条是行容器的子元素而非标题的子元素,
+// 不会污染标题 textContent,检测稳定 → 不闪烁。
 function findVisibleCodeHeadings() {
     return [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
-        .filter((h) => h.textContent.trim() === 'Code' && h.getClientRects().length > 0);
+        .filter((h) => h.getClientRects().length > 0
+            && [...h.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim() === 'Code'));
 }
 
 function resolveAlphaId(headings) {
@@ -268,15 +270,14 @@ async function updateAlphaStrip() {
         return;
     }
     const heading = headings[0];
+    const headingRow = heading.parentElement;
 
     const existing = document.getElementById('wqp-alpha-field-strip');
-    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1' && existing.isConnected
-        && heading.contains(existing)) {
-        return; // 已嵌在当前 Code 标题行内,内容就绪
+    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1'
+        && existing.isConnected && existing.parentElement === headingRow) {
+        return; // 已在当前标题行右侧,内容就绪
     }
-    if (existing && (!existing.isConnected || !heading.contains(existing) || existing.dataset.alpha !== alphaId)) {
-        existing.remove(); // 被重渲染移除/位置不对/换了 alpha → 重建
-    }
+    if (existing) existing.remove(); // 位置不对/换了 alpha/被重渲染移除 → 重建
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
@@ -290,7 +291,7 @@ async function updateAlphaStrip() {
         strip.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:12px; padding:3px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; vertical-align:middle;';
         strip.innerHTML = `<b style="color:#57606a;">字段使用:</b> `;
         strip.appendChild(await buildChipsForCode(code));
-        heading.appendChild(strip);
+        headingRow.appendChild(strip);
         console.log('[WQP] 字段使用条已嵌入 Code 标题行:', alphaId);
         strip.dataset.done = '1';
     } finally {

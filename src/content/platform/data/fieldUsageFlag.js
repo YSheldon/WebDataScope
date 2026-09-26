@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.4 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.5 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -270,12 +270,11 @@ async function updateAlphaStrip() {
         return;
     }
     const heading = headings[0];
-    const headingRow = heading.parentElement;
 
     const existing = document.getElementById('wqp-alpha-field-strip');
     if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1'
-        && existing.isConnected && existing.parentElement === headingRow) {
-        return; // 已在当前标题行右侧,内容就绪
+        && existing.isConnected && existing.parentElement === heading) {
+        return; // 已紧跟在「Code」文字后,内容就绪
     }
     if (existing && (existing.dataset.alpha !== alphaId || existing.dataset.done === '1')) {
         existing.remove(); // 换了 alpha,或上次已失败重试过 → 重建占位
@@ -283,7 +282,8 @@ async function updateAlphaStrip() {
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
-        // 立即占位显示「正在分析」,表达式就绪后原位填充
+        // 立即占位显示「正在分析」,表达式就绪后原位填充。
+        // 锚在标题元素内部(紧跟 Code 文字),两个视图的相对位置恒定一致
         let strip = document.getElementById('wqp-alpha-field-strip');
         if (!strip || !strip.isConnected) {
             removeAlphaStrips();
@@ -292,9 +292,9 @@ async function updateAlphaStrip() {
             strip.dataset.alpha = alphaId;
             strip.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:12px; padding:3px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; vertical-align:middle;';
             strip.innerHTML = `<b style="color:#57606a;">字段使用:</b> <span class="wqp-strip-status">正在分析...</span>`;
-            headingRow.appendChild(strip);
-        } else if (strip.parentElement !== headingRow) {
-            headingRow.appendChild(strip); // 跟随当前标题行
+            heading.appendChild(strip);
+        } else if (strip.parentElement !== heading) {
+            heading.appendChild(strip); // 跟随当前标题
         }
         const code = await fetchAlphaExpression(alphaId);
         if (!strip.isConnected) return;

@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.1 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.2 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,
@@ -238,8 +238,8 @@ function removeAlphaStrips() {
 }
 
 // 统一路径: 整页 /alpha/{id} 与列表抽屉都走这里。
-// 占位策略(用户建议): 页面加载即在 Code 标题后占位,表达式就绪后填充;
-// 文本反查定位到代码块时,占位条下移到代码块下方。
+// 位置不变量: 条嵌在 Code 标题行内部(「Code」文字右侧)。
+// 标题行独占一行且右边为空,grid/flex 重排、DOM 顺序都不影响它的显示位置。
 function findVisibleCodeHeadings() {
     return [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,b')]
         .filter((h) => h.textContent.trim() === 'Code' && h.getClientRects().length > 0);
@@ -270,40 +270,28 @@ async function updateAlphaStrip() {
     const heading = headings[0];
 
     const existing = document.getElementById('wqp-alpha-field-strip');
-    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1' && existing.isConnected) {
-        return; // 占位与内容均已就绪
+    if (existing && existing.dataset.alpha === alphaId && existing.dataset.done === '1' && existing.isConnected
+        && heading.contains(existing)) {
+        return; // 已嵌在当前 Code 标题行内,内容就绪
     }
-    if (existing && existing.dataset.alpha !== alphaId) existing.remove();
+    if (existing && (!existing.isConnected || !heading.contains(existing) || existing.dataset.alpha !== alphaId)) {
+        existing.remove(); // 被重渲染移除/位置不对/换了 alpha → 重建
+    }
     if (alphaStripBuilding) return;
     alphaStripBuilding = true;
     try {
-        // 占位: Code 标题正下方,加载即出现
-        let strip = document.getElementById('wqp-alpha-field-strip');
-        if (!strip || !strip.isConnected) {
-            removeAlphaStrips();
-            strip = document.createElement('div');
-            strip.id = 'wqp-alpha-field-strip';
-            strip.dataset.alpha = alphaId;
-            strip.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; padding:6px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px;';
-            strip.innerHTML = `<b style="color:#57606a;">字段使用 (${alphaId}):</b> <span class="wqp-strip-status">分析中...</span>`;
-            insertAfterHeading(strip, heading);
-            console.log('[WQP] 字段使用条已占位:', alphaId);
-        }
         const code = await fetchAlphaExpression(alphaId);
-        if (!strip.isConnected) return;
-        if (!code) {
-            const status = strip.querySelector('.wqp-strip-status');
-            if (status) status.textContent = '表达式获取失败,将自动重试...';
-            return; // done 未标记,下一轮重试
-        }
-        // 表达式就绪: 文本反查定位代码块时,占位条下移到代码块下方
-        const box = findCodeBoxByText(code);
-        if (box && box.parentNode) {
-            box.parentNode.insertBefore(strip, box.nextSibling);
-        }
-        strip.querySelector('.wqp-strip-status')?.remove();
-        strip.querySelector('.wqp-alpha-chips')?.remove();
+        if (!code) return;
+        removeAlphaStrips();
+        const strip = document.createElement('div');
+        strip.id = 'wqp-alpha-field-strip';
+        strip.dataset.alpha = alphaId;
+        // inline-flex 嵌入标题行内,不换行不遮挡
+        strip.style.cssText = 'display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:12px; padding:3px 8px; border:1px solid #d0d7de; border-radius:8px; background:#f6f8fa; font-size:12px; vertical-align:middle;';
+        strip.innerHTML = `<b style="color:#57606a;">字段使用:</b> `;
         strip.appendChild(await buildChipsForCode(code));
+        heading.appendChild(strip);
+        console.log('[WQP] 字段使用条已嵌入 Code 标题行:', alphaId);
         strip.dataset.done = '1';
     } finally {
         alphaStripBuilding = false;

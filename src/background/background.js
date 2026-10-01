@@ -409,10 +409,11 @@ function injectFetchInterceptor(tabId) {
                     const joiner = serverUrl.includes('?') ? '&' : '?';
                     const pageUrl = `${serverUrl}${joiner}limit=${pageSize}&offset=${offset}`;
                     let response;
-                    for (let attempt = 0; attempt < 5; attempt += 1) {
+                    const delays = [1000, 2000, 3000, 5000, 8000, 12000, 20000, 30000];
+                    for (let attempt = 0; attempt < delays.length; attempt += 1) {
                         response = await originalFetch(pageUrl, { credentials: 'include' });
                         if (response.status !== 429) break;
-                        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+                        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
                     }
                     if (!response?.ok) throw new Error(`虚拟列全库拉取失败: HTTP ${response?.status}`);
                     const modified = getAlphaCheckStates(await response.json());
@@ -450,6 +451,15 @@ function injectFetchInterceptor(tabId) {
                         });
                     } catch (error) {
                         console.error('[WQP] 虚拟列全库筛选失败，回退服务端结果', error);
+                    }
+                    // 回退: 剥离虚拟列参数后再发服务端请求,否则服务器拒绝 → 空列表
+                    if (clientQuery.serverUrl !== url) {
+                        if (typeof args[0] === 'string') {
+                            args[0] = clientQuery.serverUrl;
+                        } else if (args[0] instanceof Request) {
+                            args[0] = new Request(clientQuery.serverUrl, args[0]);
+                        }
+                        url = clientQuery.serverUrl;
                     }
                 }
 

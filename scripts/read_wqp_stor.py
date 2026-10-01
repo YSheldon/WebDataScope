@@ -144,7 +144,7 @@ def main():
         except Exception as exc:
             print(f'[{os.path.basename(path)}] {exc}', file=sys.stderr)
     for key, value in found.items():
-        safe = ''.join(ch if 32 <= ord(ch) < 127 else '#' for ch in key)[:80]
+        safe = ''.join(ch if 32 <= ord(ch) < 127 else hex(ord(ch))[2:] for ch in key).replace('x','')[:90] + '_' + str(len(found))
         out = os.path.join(os.path.dirname(__file__), 'extracted', safe)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, 'wb').write(value)

@@ -88,10 +88,10 @@ def position(pool_sums, target_id):
 
 
 def main():
-    files = glob.glob(os.path.join(HERE, 'extracted', 'WQP_RankData*'))
+    files = [os.path.join(HERE, 'extracted', '_current.json')]
     if not files:
         print('WQP_RankData not extracted'); sys.exit(1)
-    data = json.load(open(files[0], encoding='utf-8'))
+    data = json.load(open(max(files, key=lambda f: (os.path.getmtime(f), os.path.getsize(f))), encoding='utf-8'))
     arr = data.get('array') or data
     ts = data.get('timestamp') or data.get('savedTimestamp')
     print(f"snapshot: {ts}, consultants: {len(arr)}")

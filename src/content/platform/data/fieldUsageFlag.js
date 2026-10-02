@@ -1,5 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.35 loaded');
+console.log('[WQP] fieldUsageFlag v1.10.36 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,

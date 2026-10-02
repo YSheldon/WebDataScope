@@ -582,8 +582,8 @@ function injectFetchInterceptor(tabId) {
             }
 
             // ---- 虚拟列查询: 内联实现(不再依赖 wqpClientQuery.js 注入是否成功) ----
-            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr', 'operatorCount'];
-            const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS' };
+            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr', 'regular.operatorCount', 'operatorCount'];
+            const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount' };
             const WQP_SERVER_REWRITES = {};
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
 

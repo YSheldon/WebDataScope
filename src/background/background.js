@@ -564,9 +564,9 @@ function injectFetchInterceptor(tabId) {
             }
 
             // ---- 虚拟列查询: 内联实现(不再依赖 wqpClientQuery.js 注入是否成功) ----
-            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr'];
+            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr', 'operatorCount'];
             const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS' };
-            const WQP_SERVER_REWRITES = { operatorCount: 'regular.operatorCount' };
+            const WQP_SERVER_REWRITES = {};
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
 
             // Prod/Pool/Self Corr 的值不在列表 API 里, 来自插件查过的本地记录(localStorage)
@@ -591,6 +591,7 @@ function injectFetchInterceptor(tabId) {
                 if (canonical === 'maxProdCorr') return wqpMemoNumeric(row.id, 'prod');
                 if (canonical === 'maxPoolProdCorr') return wqpMemoNumeric(row.id, 'pool');
                 if (canonical === 'maxSelfCorr') return wqpMemoNumeric(row.id, 'self');
+                if (canonical === 'operatorCount') return Number(row.regular?.operatorCount ?? NaN);
                 return row[canonical];
             }
             function wqpNumericOf(value) {

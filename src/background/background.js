@@ -404,9 +404,20 @@ function injectFetchInterceptor(tabId) {
             // 全库结果持久化到扩展后台的 IndexedDB(扩展源, 所有标签页共享): 首次全量, 之后只增量
             function wqpPoolGet(key) {
                 return new Promise((resolve) => {
+                    const reqId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                    const slot = `WQP_POOL_SLOT_${reqId}`;
+                    const timer = setTimeout(() => { chrome.storage.onChanged.removeListener(onChange); resolve(null); }, 20000);
+                    function onChange(changes, area) {
+                        if (area !== 'local' || !(slot in changes)) return;
+                        clearTimeout(timer);
+                        chrome.storage.onChanged.removeListener(onChange);
+                        chrome.storage.local.remove(slot);
+                        resolve(changes[slot]?.newValue?.data || null);
+                    }
+                    chrome.storage.onChanged.addListener(onChange);
                     try {
-                        chrome.runtime.sendMessage({ type: 'WQP_POOL_GET', key }, (resp) => resolve(resp?.data || null));
-                    } catch (_) { resolve(null); }
+                        chrome.runtime.sendMessage({ type: 'WQP_POOL_GET', key, reqId });
+                    } catch (_) { clearTimeout(timer); chrome.storage.onChanged.removeListener(onChange); resolve(null); }
                 });
             }
             function wqpPoolSet(key, value) {
@@ -929,8 +940,12 @@ async function wqpPoolSet(key, value) {
 // 内容脚本可主动请求最近 N 条记录
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'WQP_POOL_GET') {
-        wqpPoolGet(msg.key).then((data) => sendResponse({ ok: true, data })).catch((e) => sendResponse({ ok: false, error: String(e) }));
-        return true;
+        // 结果经 chrome.storage.local 回传: MV3 service worker 里异步 sendResponse 会丢结果
+        const slot = `WQP_POOL_SLOT_${msg.reqId}`;
+        wqpPoolGet(msg.key)
+            .then((data) => chrome.storage.local.set({ [slot]: { data: data || null } }))
+            .catch((e) => chrome.storage.local.set({ [slot]: { error: String(e) } }));
+        return false;
     }
     if (msg && msg.type === 'WQP_POOL_SET') {
         wqpPoolSet(msg.key, msg.value).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));

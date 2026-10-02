@@ -224,14 +224,16 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 
 // 注入 Fetch 拦截器到页面的 MAIN 环境中
 function injectFetchInterceptor(tabId) {
+    const extBase = chrome.runtime.getURL('');
     chrome.scripting.executeScript({
         target: { tabId: tabId },
         world: "MAIN",
         files: ['src/content/shared/wqpClientQuery.js'],
-    }).catch(() => {}).finally(() => chrome.scripting.executeScript({
+    }).catch((error) => console.error('[WQP] wqpClientQuery 注入失败:', error)).finally(() => chrome.scripting.executeScript({
         target: { tabId: tabId },
         world: "MAIN", // 必须指定 MAIN，否则无法覆盖页面本身的 window.fetch
-        func: () => {
+        args: [extBase],
+        func: (extBase) => {
 
             function postCapturedSessionToken(value) {
                 const text = String(value || '');
@@ -439,6 +441,14 @@ function injectFetchInterceptor(tabId) {
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
                 const clientQuery = window.WQPClientQuery?.parseAlphasListUrl(url);
+                console.debug('[WQP] alphas query:', url.slice(0, 130), '| WQPClientQuery:', !!window.WQPClientQuery, '| client path:', clientQuery?.active || false);
+                if (!window.WQPClientQuery && extBase) {
+                    // 自愈: 库文件注入失败时用 script tag 从扩展 URL 补载
+                    const tag = document.createElement('script');
+                    tag.src = extBase + 'src/content/shared/wqpClientQuery.js';
+                    document.head.appendChild(tag);
+                    console.warn('[WQP] WQPClientQuery 缺失,已补载 script tag');
+                }
                 if (clientQuery?.active) {
                     try {
                         const rows = await loadAlphasForClientQuery(clientQuery.serverUrl);

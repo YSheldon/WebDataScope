@@ -636,7 +636,8 @@ function injectFetchInterceptor(tabId) {
                         page.name = 'wqp-client-page';
                         page.next = start + size < filtered.length ? 'https://api.worldquantbrain.com/wqp/next' : null;
                         page.previous = start > 0 ? 'https://api.worldquantbrain.com/wqp/prev' : null;
-                        console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}`);
+                        const withProd = rows.filter((r) => Number.isFinite(wqpMemoNumeric(r.id, 'prod'))).length;
+                        console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}（拉取 ${rows.length} 行, 其中有 prod corr 记录 ${withProd} 行）`);
                         return new Response(JSON.stringify(page), {
                             status: 200,
                             headers: { 'Content-Type': 'application/json' },

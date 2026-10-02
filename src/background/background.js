@@ -680,7 +680,18 @@ function injectFetchInterceptor(tabId) {
                 const serverUrl = `${url.origin}${url.pathname}${serverParts.length ? `?${serverParts.join('&')}` : ''}`;
                 return { limit, offset, clientOrder, clientFilters, serverUrl, active: Boolean(clientOrder || clientFilters.length) };
             }
-            // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤
+            // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤;
+            // 另外白名单里的标量字段(region / universe / sharpe 等)也在本地补做——本地库按 status 存整池, 不补就丢了。
+            // 只补标量: 数组/对象类字段(tags / pyramids / themes / classifications)的列表接口值常是 null 或数组,
+            // 在本地按标量比会把整池滤空, 这类一律交给服务端。
+            const WQP_LOCAL_SCALAR_FIELDS = new Set([
+                'settings.region', 'settings.universe', 'settings.delay', 'settings.neutralization',
+                'settings.decay', 'settings.truncation',
+                'is.sharpe', 'is.fitness', 'is.turnover', 'is.returns', 'is.margin', 'is.drawdown', 'is.bookSize',
+            ]);
+            function wqpPath(row, path) {
+                return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), row);
+            }
             function wqpConstrain(rows, rawUrl) {
                 let types = null;
                 let hidden = null;
@@ -688,6 +699,7 @@ function injectFetchInterceptor(tabId) {
                 let max = null;
                 let minInc = true;
                 let maxInc = false;
+                const local = [];
                 const q = String(rawUrl).split('?')[1] || '';
                 for (const part of q.split('&')) {
                     let d;
@@ -695,20 +707,69 @@ function injectFetchInterceptor(tabId) {
                     if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
                     if (d.startsWith('hidden=')) { hidden = d.slice(7) === 'true'; continue; }
                     const m = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
-                    if (!m) continue;
-                    if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
-                    else { max = m[2]; maxInc = m[1] === '<='; }
+                    if (m) {
+                        if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
+                        else { max = m[2]; maxInc = m[1] === '<='; }
+                        continue;
+                    }
+                    const gm = d.match(/^([A-Za-z0-9_.]+)(>=|<=|!=|>|<|=)(.*)$/);
+                    if (gm && WQP_LOCAL_SCALAR_FIELDS.has(gm[1])) local.push({ field: gm[1], op: gm[2], value: gm[3] });
                 }
-                if (!types && hidden === null && !min && !max) return rows;
+                // 值缺失(字段不存在 / 为 null)或不是标量时跳过这条, 宁可不过滤也不清空列表
+                const usable = local.filter((f) => rows.some((r) => {
+                    const v = wqpPath(r, f.field);
+                    return v !== undefined && v !== null && typeof v !== 'object';
+                }));
+                for (const f of local) {
+                    if (!usable.includes(f)) console.log(`[WQP] 本地补过滤跳过 ${f.field}${f.op}${f.value}: 行内无有效标量值`);
+                }
+                if (!types && hidden === null && !min && !max && !usable.length) return rows;
                 return rows.filter((r) => {
                     if (types && !types.includes(r.type)) return false;
                     if (hidden !== null && Boolean(r.hidden) !== hidden) return false;
                     const ts = r.dateCreated || '';
                     if (min && (minInc ? ts < min : ts <= min)) return false;
                     if (max && (maxInc ? ts > max : ts >= max)) return false;
+                    for (const f of usable) {
+                        const actual = wqpPath(r, f.field);
+                        if (f.op === '=') {
+                            if (!f.value.split('\u001f').includes(String(actual))) return false;
+                        } else if (!wqpCompare(f.op, actual, f.value)) return false;
+                    }
                     return true;
                 });
             }
+
+            // 最近一次虚拟列查询, 供控制台自查: 只读, 不改任何数据
+            let wqpLastQuery = null;
+            window.WQP_DEBUG_ALPHA = async (alphaId) => {
+                if (!wqpLastQuery) return { error: '还没有记录到虚拟列查询, 先在列表上点一次筛选' };
+                const { url, parsed } = wqpLastQuery;
+                const rows = await loadAlphasForClientQuery(parsed.serverUrl);
+                const row = rows.find((r) => r.id === alphaId);
+                if (!row) return { found: false, poolRows: rows.length, url, hint: '该 alpha 不在本地库里' };
+                const details = (parsed.clientFilters || []).map((f) => {
+                    const value = wqpValueOf(row, f.field);
+                    const corrNa = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'].includes(f.field)
+                        && !Number.isFinite(value) && (f.op === '<' || f.op === '<=');
+                    const pass = corrNa || wqpCompare(f.op, value, f.value);
+                    return `${f.field} ${f.op} ${f.value} | 值=${Number.isNaN(value) ? 'NaN(没查过)' : value} | ${pass ? '通过' : '被筛掉'}`;
+                });
+                const constrained = wqpConstrain(rows, url);
+                const kept = wqpApply(constrained, parsed);
+                return {
+                    found: true, poolRows: rows.length, url, details,
+                    surviveConstrain: constrained.some((r) => r.id === alphaId),
+                    surviveFilter: kept.some((r) => r.id === alphaId),
+                    keptTotal: kept.length,
+                    values: {
+                        type: row.type, stage: row.stage, region: row.settings?.region, universe: row.settings?.universe,
+                        sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
+                        operatorCount: row.regular?.operatorCount, maxProdCorr: row.maxProdCorr,
+                        pyramids: row.pyramids, themes: row.themes, tags: row.tags, dateCreated: row.dateCreated,
+                    },
+                };
+            };
 
             function wqpApply(rows, parsed) {
                 let out = Array.isArray(rows) ? rows.slice() : [];
@@ -769,6 +830,7 @@ function injectFetchInterceptor(tabId) {
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
                 const clientQuery = wqpParseUrl(url);
+                if (clientQuery?.active) wqpLastQuery = { url, parsed: clientQuery };
                 console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
                 if (clientQuery?.active) {
                     try {

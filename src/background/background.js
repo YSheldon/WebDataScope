@@ -357,6 +357,29 @@ function injectFetchInterceptor(tabId) {
                     'LOW_INVESTABILITY_CONSTRAINED_SHARPE'
                 ]));
 
+                // Operator Count 按用户口径重算: 平台把表达式开头的负号算作一个算子,
+                // 且 ts_backfill / group_backfill 属于豁免壳不该计入(实测 595/595 平台数 = 算子数 + 前导负号)
+                const WQP_OPERATOR_NAMES = new Set(`add multiply sign subtract pasteurize log max abs divide min signed_power
+                    inverse sqrt reverse power densify or and not is_nan less equal greater if_else not_equal less_equal
+                    greater_equal ts_corr ts_zscore ts_returns ts_product ts_std_dev ts_backfill days_from_last_change
+                    last_diff_value ts_scale ts_step ts_sum ts_av_diff ts_kurtosis ts_mean ts_arg_max ts_rank ts_ir ts_delay
+                    ts_quantile ts_count_nans ts_covariance ts_decay_linear ts_arg_min ts_regression ts_max_diff
+                    kth_element hump ts_delta ts_target_tvr_decay ts_target_tvr_hump winsorize rank vector_neut zscore
+                    scale normalize quantile vec_min vec_count vec_sum vec_max vec_avg vec_stddev vec_range bucket tail
+                    trade_when group_mean group_rank group_backfill group_scale group_count group_zscore group_std_dev
+                    group_sum group_neutralize`.split(/\s+/).filter(Boolean));
+                const WQP_FREE_OPERATORS = new Set(['ts_backfill', 'group_backfill']);
+                function wqpExemptOperatorCount(code) {
+                    const tokens = String(code || '').match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+                    return tokens.filter((t) => WQP_OPERATOR_NAMES.has(t) && !WQP_FREE_OPERATORS.has(t)).length;
+                }
+                function wqpRewriteOperatorCount(regular) {
+                    if (!regular?.code) return;
+                    const platform = Number(regular.operatorCount);
+                    regular.operatorCountPlatform = Number.isFinite(platform) ? platform : null;
+                    regular.operatorCount = wqpExemptOperatorCount(regular.code);
+                }
+
                 // 2. 核心逻辑：遍历数据，统计不合格数量并新增字段
                 // 
                 // 比如sub-univers ,robust 其实能不能把那些fail的具体值做出来，比如robust 那些的值
@@ -366,6 +389,7 @@ function injectFetchInterceptor(tabId) {
                 if (!Array.isArray(originalData?.results)) return originalData;
                 const prodMemoCache = readProdMemoCache();
                 originalData.results.forEach(item => {
+                    wqpRewriteOperatorCount(item?.regular);
                     item.maxProdCorr = getMaxProdCorr(prodMemoCache, item?.id);
                     item.maxPoolProdCorr = getMaxPoolProdCorr(prodMemoCache, item?.id);
                     item.maxSelfCorr = getMaxSelfCorr(prodMemoCache, item?.id);
@@ -565,6 +589,8 @@ function injectFetchInterceptor(tabId) {
                         cursor = oldest;
                     }
                     const rows = fresh.concat(stored?.rows || []);
+                    // 老库里存的是平台口径的 operatorCount, 读出来统一按用户口径重算
+                    for (const row of rows) wqpRewriteOperatorCount(row?.regular);
                     let newest = watermark;
                     for (const row of fresh) if (row.dateCreated && row.dateCreated > newest) newest = row.dateCreated;
                     await wqpPoolSet(cacheKey, { rows, newest });

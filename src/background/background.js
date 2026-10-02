@@ -505,6 +505,7 @@ function injectFetchInterceptor(tabId) {
                 const task = (async () => {
                     await wqpMigratePoolOnce(); // 先把 1.10.25 的旧库迁进扩展源, 避免升级后重下
                     const stored = await wqpPoolGet(cacheKey); // { rows, newest } 或 null
+                    console.log(`[WQP] 本地库读取 key=${cacheKey} 已有 ${stored?.rows?.length || 0} 行`);
                     const have = new Set((stored?.rows || []).map((r) => r.id));
                     const watermark = stored?.newest || '';
                     const fresh = [];

@@ -435,25 +435,144 @@ function injectFetchInterceptor(tabId) {
                 return String(method || 'GET').toUpperCase();
             }
 
+            // ---- 虚拟列查询: 内联实现(不再依赖 wqpClientQuery.js 注入是否成功) ----
+            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr'];
+            const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS' };
+            const WQP_SERVER_REWRITES = { operatorCount: 'regular.operatorCount' };
+            const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
+
+            function wqpValueOf(row, field) {
+                const canonical = WQP_FIELD_CANONICAL[field] || field;
+                if (canonical === 'is.failedNumRA') return Number(row.is?.failedNumRA ?? 0);
+                if (canonical === 'is.failedNumPPA') return Number(row.is?.failedNumPPA ?? 0);
+                if (canonical === 'is.WQPPYS') return String(row.is?.WQPPYS ?? '');
+                return row[canonical];
+            }
+            function wqpNumericOf(value) {
+                if (typeof value === 'number' && Number.isFinite(value)) return value;
+                const m = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
+                return m ? Number(m[0]) : NaN;
+            }
+            function wqpCompare(op, actual, raw) {
+                const left = wqpNumericOf(actual);
+                const right = Number(raw);
+                if (Number.isFinite(left) && Number.isFinite(right)) {
+                    if (op === '<') return left < right;
+                    if (op === '>') return left > right;
+                    if (op === '<=') return left <= right;
+                    if (op === '>=') return left >= right;
+                    if (op === '=') return left === right;
+                    if (op === '!=') return left !== right;
+                }
+                const text = String(actual ?? '');
+                const expect = String(raw ?? '');
+                if (op === '=') return text === expect;
+                if (op === '!=') return text !== expect;
+                return text.includes(expect);
+            }
+            function wqpMatchFilter(token) {
+                const fields = WQP_CLIENT_FIELDS.slice().sort((a, b) => b.length - a.length);
+                for (const field of fields) {
+                    if (!token.startsWith(field)) continue;
+                    const rest = token.slice(field.length);
+                    for (const op of WQP_OPS) {
+                        if (rest.startsWith(op)) return { field: WQP_FIELD_CANONICAL[field] || field, op, value: rest.slice(op.length) };
+                    }
+                }
+                return null;
+            }
+            function wqpRewriteServerFilter(token) {
+                for (const field of Object.keys(WQP_SERVER_REWRITES).sort((a, b) => b.length - a.length)) {
+                    if (!token.startsWith(field)) continue;
+                    const rest = token.slice(field.length);
+                    if (WQP_OPS.some((op) => rest.startsWith(op))) return `${WQP_SERVER_REWRITES[field]}${rest}`;
+                }
+                return null;
+            }
+            function wqpParseUrl(rawUrl) {
+                let url;
+                try { url = new URL(rawUrl, 'https://api.worldquantbrain.com'); } catch (_) { return null; }
+                if (!/\/users\/[^/]+\/alphas$/.test(url.pathname)) return null;
+                const parts = url.search.replace(/^\?/, '').split('&').filter(Boolean);
+                let limit = 10, offset = 0, clientOrder = null;
+                const clientFilters = [], serverParts = [];
+                for (const part of parts) {
+                    const decoded = decodeURIComponent(part.replace(/\+/g, ' '));
+                    if (decoded.startsWith('limit=')) { limit = Number(decoded.slice(6)) || 10; continue; }
+                    if (decoded.startsWith('offset=')) { offset = Number(decoded.slice(7)) || 0; continue; }
+                    if (decoded.startsWith('order=')) {
+                        const order = decoded.slice(6);
+                        const field = order.startsWith('-') ? order.slice(1) : order;
+                        if (WQP_CLIENT_FIELDS.includes(field)) { clientOrder = { field: WQP_FIELD_CANONICAL[field] || field, desc: order.startsWith('-') }; continue; }
+                        if (WQP_SERVER_REWRITES[field]) { serverParts.push(`order=${order.startsWith('-') ? '-' : ''}${WQP_SERVER_REWRITES[field]}`); continue; }
+                        serverParts.push(part); continue;
+                    }
+                    const rewritten = wqpRewriteServerFilter(decoded);
+                    if (rewritten) { serverParts.push(rewritten); continue; }
+                    const filter = wqpMatchFilter(decoded);
+                    if (filter) { clientFilters.push(filter); continue; }
+                    serverParts.push(part);
+                }
+                const serverUrl = `${url.origin}${url.pathname}${serverParts.length ? `?${serverParts.join('&')}` : ''}`;
+                return { limit, offset, clientOrder, clientFilters, serverUrl, active: Boolean(clientOrder || clientFilters.length) };
+            }
+            function wqpApply(rows, parsed) {
+                let out = Array.isArray(rows) ? rows.slice() : [];
+                for (const filter of parsed.clientFilters || []) {
+                    out = out.filter((row) => wqpCompare(filter.op, wqpValueOf(row, filter.field), filter.value));
+                }
+                if (parsed.clientOrder) {
+                    const { field, desc } = parsed.clientOrder;
+                    out.sort((a, b) => {
+                        const av = wqpValueOf(a, field), bv = wqpValueOf(b, field);
+                        const an = wqpNumericOf(av), bn = wqpNumericOf(bv);
+                        const cmp = Number.isFinite(an) && Number.isFinite(bn) ? an - bn : String(av ?? '').localeCompare(String(bv ?? ''));
+                        return desc ? -cmp : cmp;
+                    });
+                }
+                return out;
+            }
+            function wqpPage(rows, parsed) {
+                const start = Math.max(0, parsed.offset || 0);
+                const size = Math.max(1, parsed.limit || 10);
+                return { count: rows.length, results: rows.slice(start, start + size) };
+            }
+            function wqpEnsureOption(node, key, spec) {
+                if (!node || typeof node !== 'object') return;
+                node.children = node.children && typeof node.children === 'object' ? node.children : {};
+                if (!node.children[key]) node.children[key] = spec;
+            }
+            function wqpInjectAlphaOptions(root, seen = new Set()) {
+                if (!root || typeof root !== 'object' || seen.has(root)) return root;
+                seen.add(root);
+                if (root.is && typeof root.is === 'object') {
+                    wqpEnsureOption(root.is, 'failedNumRA', { type: 'integer', required: false, readOnly: true });
+                    wqpEnsureOption(root.is, 'failedNumPPA', { type: 'integer', required: false, readOnly: true });
+                    wqpEnsureOption(root.is, 'WQPPYS', { type: 'string', required: false, readOnly: true });
+                }
+                if (root.regular && typeof root.regular === 'object') {
+                    wqpEnsureOption(root.regular, 'operatorCount', { type: 'integer', required: false, readOnly: true });
+                }
+                for (const key of ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr']) {
+                    if (root.is && root.is[key] === undefined) root.is[key] = { type: 'string', required: false, readOnly: true };
+                }
+                const values = Array.isArray(root) ? root : Object.values(root);
+                values.forEach((value) => { if (value && typeof value === 'object') wqpInjectAlphaOptions(value, seen); });
+                return root;
+            }
+
             window.fetch = async function (...args) {
                 let url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
                 const method = requestMethod(args[0], args[1]);
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
-                const clientQuery = window.WQPClientQuery?.parseAlphasListUrl(url);
-                console.debug('[WQP] alphas query:', url.slice(0, 130), '| WQPClientQuery:', !!window.WQPClientQuery, '| client path:', clientQuery?.active || false);
-                if (!window.WQPClientQuery && extBase) {
-                    // 自愈: 库文件注入失败时用 script tag 从扩展 URL 补载
-                    const tag = document.createElement('script');
-                    tag.src = extBase + 'src/content/shared/wqpClientQuery.js';
-                    document.head.appendChild(tag);
-                    console.warn('[WQP] WQPClientQuery 缺失,已补载 script tag');
-                }
+                const clientQuery = wqpParseUrl(url);
+                console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
                 if (clientQuery?.active) {
                     try {
                         const rows = await loadAlphasForClientQuery(clientQuery.serverUrl);
-                        const filtered = window.WQPClientQuery.applyClientQuery(rows, clientQuery);
-                        const page = window.WQPClientQuery.pageResult(filtered, clientQuery);
+                        const filtered = wqpApply(rows, clientQuery);
+                        const page = wqpPage(filtered, clientQuery);
                         console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}`);
                         return new Response(JSON.stringify(page), {
                             status: 200,
@@ -478,9 +597,9 @@ function injectFetchInterceptor(tabId) {
 
                 // OPTIONS 字段表里补上虚拟列，否则筛选框会报
                 // "The filter failedNumPPA is invalid. Try a different syntax"
-                if (method === 'OPTIONS' && /\/users\/[^/]+\/alphas\/?$/.test(url.split('?')[0]) && window.WQPClientQuery?.injectAlphaOptions) {
+                if (method === 'OPTIONS' && /\/users\/[^/]+\/alphas\/?$/.test(url.split('?')[0])) {
                     try {
-                        const schema = window.WQPClientQuery.injectAlphaOptions(await response.clone().json());
+                        const schema = wqpInjectAlphaOptions(await response.clone().json());
                         return new Response(JSON.stringify(schema), {
                             status: response.status,
                             statusText: response.statusText,

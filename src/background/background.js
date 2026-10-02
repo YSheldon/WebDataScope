@@ -399,6 +399,42 @@ function injectFetchInterceptor(tabId) {
 
             const originalFetch = window.fetch;
             const clientAlphaCache = new Map();
+            const clientAlphaInflight = new Map();
+
+            // 全库结果持久化到 IndexedDB: 首次全量拉取, 之后只增量补新增的 alpha
+            const WQP_POOL_DB = 'WQP_AlphaPool';
+            function wqpPoolOpen() {
+                return new Promise((resolve, reject) => {
+                    const req = indexedDB.open(WQP_POOL_DB, 1);
+                    req.onupgradeneeded = () => {
+                        const db = req.result;
+                        if (!db.objectStoreNames.contains('pools')) db.createObjectStore('pools');
+                    };
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+            }
+            async function wqpPoolGet(key) {
+                try {
+                    const db = await wqpPoolOpen();
+                    return await new Promise((resolve) => {
+                        const req = db.transaction('pools', 'readonly').objectStore('pools').get(key);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => resolve(null);
+                    });
+                } catch (_) { return null; }
+            }
+            async function wqpPoolSet(key, value) {
+                try {
+                    const db = await wqpPoolOpen();
+                    await new Promise((resolve) => {
+                        const tx = db.transaction('pools', 'readwrite');
+                        tx.objectStore('pools').put(value, key);
+                        tx.oncomplete = () => resolve();
+                        tx.onerror = () => resolve();
+                    });
+                } catch (_) { /* 持久化失败不影响本次筛选结果 */ }
+            }
 
             async function fetchAlphasPage(pageUrl) {
                 const backoffs = [0, 800, 2000];
@@ -424,49 +460,64 @@ function injectFetchInterceptor(tabId) {
             }
 
             async function loadAlphasForClientQuery(serverUrl) {
-                // 缓存键归一化: 去掉 order/limit/offset, 同一筛选集只拉一次(应用重试不再重头拉)
+                // 缓存键归一化: 去掉 order/limit/offset, 同一筛选集共用一份本地库
                 const cacheKey = serverUrl.replace(/([?&])(order|limit|offset)=[^&]*/g, '$1').replace(/[?&]+$/, '');
-                const cached = clientAlphaCache.get(cacheKey);
-                if (cached && Date.now() - cached.at < 120000) return cached.rows;
-                const rows = [];
-                const seenIds = new Set();
-                let cursor = null;              // dateCreated<= 游标(最新优先): 绕过 API 的深分页 offset 上限
-                const joiner = serverUrl.includes('?') ? '&' : '?';
-                let failedPages = 0;
-                const PULL_CAP = 20000;         // 覆盖整个筛选窗口(查询自带 dateCreated 下界), 3000 会把窗口后段的合格 alpha 截掉
-                for (let guard = 0; guard < 300 && rows.length < PULL_CAP; guard += 1) {
-                    let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
-                    if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;
-                    let res;
-                    try {
-                        res = await fetchAlphasPage(pageUrl);
-                    } catch (err) {
-                        failedPages += 1;
-                        console.warn(`[WQP] 全库拉取页失败(${err.message}), 重试 ${failedPages}/3`);
-                        if (failedPages >= 3) throw new Error(`虚拟列全库拉取失败: ${err.message}`);
-                        await new Promise((r) => setTimeout(r, 2000));
-                        continue;
+                const mem = clientAlphaCache.get(cacheKey);
+                if (mem && Date.now() - mem.at < 60000) return mem.rows; // 1 分钟内的重复请求(应用重试)直接用内存
+                if (clientAlphaInflight.has(cacheKey)) return clientAlphaInflight.get(cacheKey); // 同一个拉取不并发重入
+                const task = (async () => {
+                    const stored = await wqpPoolGet(cacheKey); // { rows, newest } 或 null
+                    const have = new Set((stored?.rows || []).map((r) => r.id));
+                    const watermark = stored?.newest || '';
+                    const fresh = [];
+                    const seenIds = new Set();
+                    let cursor = null;
+                    const joiner = serverUrl.includes('?') ? '&' : '?';
+                    let failedPages = 0;
+                    for (let guard = 0; guard < 500; guard += 1) {
+                        let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
+                        if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;
+                        let res;
+                        try {
+                            res = await fetchAlphasPage(pageUrl);
+                        } catch (err) {
+                            failedPages += 1;
+                            console.warn(`[WQP] 全库拉取页失败(${err.message}), 重试 ${failedPages}/3`);
+                            if (failedPages >= 3) throw new Error(`虚拟列全库拉取失败: ${err.message}`);
+                            await new Promise((r) => setTimeout(r, 2000));
+                            continue;
+                        }
+                        failedPages = 0;
+                        const page = res.page || [];
+                        if (!page.length) break;
+                        let oldest = null;
+                        let newOnPage = 0;
+                        for (const row of page) {
+                            if (row.id && seenIds.has(row.id)) continue;
+                            if (row.id) seenIds.add(row.id);
+                            const ts = row.dateCreated;
+                            if (ts && (!oldest || ts < oldest)) oldest = ts;
+                            if (row.id && have.has(row.id)) continue; // 本地已有
+                            fresh.push(row);
+                            newOnPage += 1;
+                        }
+                        console.log(`[WQP] 虚拟列拉取${watermark ? '(增量)' : '(全量)'} 新增 ${fresh.length} 行`);
+                        if (page.length < 100) break; // 不足一页 = 到底
+                        // 增量模式: 翻到已存储的水位以下且本页无新增, 说明追平了
+                        if (watermark && oldest && oldest <= watermark && newOnPage === 0) break;
+                        if (!oldest || oldest === cursor) break; // 游标无进展, 防死循环
+                        cursor = oldest;
                     }
-                    failedPages = 0;
-                    const page = res.page || [];
-                    if (!page.length) break;
-                    let oldest = null;
-                    let fresh = 0;
-                    for (const row of page) {
-                        if (row.id && seenIds.has(row.id)) continue;
-                        if (row.id) seenIds.add(row.id);
-                        rows.push(row);
-                        fresh += 1;
-                        const ts = row.dateCreated;
-                        if (ts && (!oldest || ts < oldest)) oldest = ts;
-                    }
-                    console.log(`[WQP] 虚拟列全库拉取(最新优先) 已取 ${rows.length} 行${rows.length >= PULL_CAP ? '(达上限)' : ''}`);
-                    if (!fresh) break;              // 游标无进展(整页同一时间戳), 防死循环
-                    if (page.length < 100) break;   // 不足一页 = 到底
-                    cursor = oldest;
-                }
-                clientAlphaCache.set(cacheKey, { at: Date.now(), rows });
-                return rows;
+                    const rows = fresh.concat(stored?.rows || []);
+                    let newest = watermark;
+                    for (const row of fresh) if (row.dateCreated && row.dateCreated > newest) newest = row.dateCreated;
+                    await wqpPoolSet(cacheKey, { rows, newest });
+                    clientAlphaCache.set(cacheKey, { at: Date.now(), rows });
+                    console.log(`[WQP] 本地库已更新: 共 ${rows.length} 行(本次新增 ${fresh.length})`);
+                    return rows;
+                })();
+                clientAlphaInflight.set(cacheKey, task);
+                try { return await task; } finally { clientAlphaInflight.delete(cacheKey); }
             }
 
             function requestMethod(resource, config) {

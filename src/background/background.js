@@ -459,16 +459,12 @@ function injectFetchInterceptor(tabId) {
                 throw new Error(lastErr || 'fetch failed');
             }
 
-            // 本地库按「稳定基底」共用一份: 去掉 type 和 dateCreated(这些在本地过滤),
-            // 这样 REGULAR / RA / 不同日期窗口的查询都命中同一份库, 不会各自全量重拉
+            // 本地库按 status 共用一份(未提交池只有一份): type / dateCreated / hidden 全部在本地过滤,
+            // 页面同时发的 REGULAR、RA、不同日期窗口查询都命中同一份库, 全量只拉一次
             function wqpPoolUrl(serverUrl) {
                 const u = new URL(serverUrl);
-                const keep = [];
-                for (const [k, v] of u.searchParams) {
-                    if (k === 'type' || k.replace(/>|</g, '').startsWith('dateCreated')) continue;
-                    keep.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
-                }
-                return `${u.origin}${u.pathname}${keep.length ? `?${keep.join('&')}` : ''}`;
+                const status = u.searchParams.get('status') || 'UNSUBMITTED';
+                return `${u.origin}${u.pathname}?status=${encodeURIComponent(status)}`;
             }
 
             async function loadAlphasForClientQuery(serverUrl) {
@@ -639,6 +635,7 @@ function injectFetchInterceptor(tabId) {
             // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤
             function wqpConstrain(rows, rawUrl) {
                 let types = null;
+                let hidden = null;
                 let min = null;
                 let max = null;
                 let minInc = true;
@@ -648,14 +645,16 @@ function injectFetchInterceptor(tabId) {
                     let d;
                     try { d = decodeURIComponent(part.replace(/\+/g, ' ')); } catch (_) { continue; }
                     if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
+                    if (d.startsWith('hidden=')) { hidden = d.slice(7) === 'true'; continue; }
                     const m = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
                     if (!m) continue;
                     if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
                     else { max = m[2]; maxInc = m[1] === '<='; }
                 }
-                if (!types && !min && !max) return rows;
+                if (!types && hidden === null && !min && !max) return rows;
                 return rows.filter((r) => {
                     if (types && !types.includes(r.type)) return false;
+                    if (hidden !== null && Boolean(r.hidden) !== hidden) return false;
                     const ts = r.dateCreated || '';
                     if (min && (minInc ? ts < min : ts <= min)) return false;
                     if (max && (maxInc ? ts > max : ts >= max)) return false;

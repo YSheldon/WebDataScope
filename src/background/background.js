@@ -400,6 +400,29 @@ function injectFetchInterceptor(tabId) {
             const originalFetch = window.fetch;
             const clientAlphaCache = new Map();
 
+            async function fetchAlphasPage(pageUrl) {
+                const backoffs = [0, 800, 2000];
+                let lastErr = '';
+                for (let attempt = 0; attempt < backoffs.length; attempt += 1) {
+                    if (backoffs[attempt]) await new Promise((r) => setTimeout(r, backoffs[attempt]));
+                    let response;
+                    const d429 = [1000, 2000, 3000, 5000, 8000, 12000, 20000, 30000];
+                    for (let a = 0; a < d429.length; a += 1) {
+                        response = await originalFetch(pageUrl, { credentials: 'include' });
+                        if (response.status !== 429) break;
+                        await new Promise((r) => setTimeout(r, d429[a]));
+                    }
+                    if (response?.ok) {
+                        try {
+                            const modified = getAlphaCheckStates(await response.json());
+                            const page = Array.isArray(modified?.results) ? modified.results : [];
+                            return { page, total: Number(modified?.count ?? 0) };
+                        } catch (err) { lastErr = 'parse error'; }
+                    } else lastErr = `HTTP ${response?.status}`;
+                }
+                throw new Error(lastErr || 'fetch failed');
+            }
+
             async function loadAlphasForClientQuery(serverUrl) {
                 const cached = clientAlphaCache.get(serverUrl);
                 if (cached && Date.now() - cached.at < 120000) return cached.rows;
@@ -407,20 +430,24 @@ function injectFetchInterceptor(tabId) {
                 let offset = 0;
                 let total = Infinity;
                 const pageSize = 100;
+                let failedPages = 0;
                 while (offset < total && offset < 20000) {
                     const joiner = serverUrl.includes('?') ? '&' : '?';
                     const pageUrl = `${serverUrl}${joiner}limit=${pageSize}&offset=${offset}`;
-                    let response;
-                    const delays = [1000, 2000, 3000, 5000, 8000, 12000, 20000, 30000];
-                    for (let attempt = 0; attempt < delays.length; attempt += 1) {
-                        response = await originalFetch(pageUrl, { credentials: 'include' });
-                        if (response.status !== 429) break;
-                        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+                    let page = null;
+                    try {
+                        const res = await fetchAlphasPage(pageUrl);
+                        page = res.page;
+                        if (res.total) total = res.total;
+                    } catch (err) {
+                        failedPages += 1;
+                        console.warn(`[WQP] 页 offset=${offset} 拉取失败(${err.message}), 跳过 100 行后继续`);
+                        if (failedPages > Math.max(3, Math.floor((total || 10000) / pageSize / 10))) {
+                            throw new Error(`虚拟列全库拉取失败(失败页过多): ${err.message}`);
+                        }
+                        offset += pageSize;
+                        continue;
                     }
-                    if (!response?.ok) throw new Error(`虚拟列全库拉取失败: HTTP ${response?.status}`);
-                    const modified = getAlphaCheckStates(await response.json());
-                    const page = Array.isArray(modified?.results) ? modified.results : [];
-                    total = Number(modified?.count ?? rows.length + page.length);
                     rows.push(...page);
                     console.log(`[WQP] 虚拟列全库拉取 ${rows.length}/${total}`);
                     if (!page.length || page.length < pageSize) break;

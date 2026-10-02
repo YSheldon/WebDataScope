@@ -680,7 +680,18 @@ function injectFetchInterceptor(tabId) {
                 const serverUrl = `${url.origin}${url.pathname}${serverParts.length ? `?${serverParts.join('&')}` : ''}`;
                 return { limit, offset, clientOrder, clientFilters, serverUrl, active: Boolean(clientOrder || clientFilters.length) };
             }
-            // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤
+            // 服务端筛选参数在本地库上补做: 库只按 status 存整池, 这些条件不补就会被丢掉
+            const WQP_LOCAL_SKIP = new Set(['limit', 'offset', 'order', 'type', 'hidden', 'status']);
+            function wqpPath(row, path) {
+                return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), row);
+            }
+            // 前端有时用短名(region)有时用全路径(settings.region), 两边都试
+            function wqpResolve(row, field) {
+                const direct = wqpPath(row, field);
+                if (direct !== undefined) return direct;
+                if (String(field).includes('.')) return undefined;
+                return row.settings?.[field] ?? row.is?.[field];
+            }
             function wqpConstrain(rows, rawUrl) {
                 let types = null;
                 let hidden = null;
@@ -688,24 +699,44 @@ function injectFetchInterceptor(tabId) {
                 let max = null;
                 let minInc = true;
                 let maxInc = false;
+                const generic = [];
                 const q = String(rawUrl).split('?')[1] || '';
                 for (const part of q.split('&')) {
                     let d;
                     try { d = decodeURIComponent(part.replace(/\+/g, ' ')); } catch (_) { continue; }
                     if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
                     if (d.startsWith('hidden=')) { hidden = d.slice(7) === 'true'; continue; }
-                    const m = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
-                    if (!m) continue;
-                    if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
-                    else { max = m[2]; maxInc = m[1] === '<='; }
+                    const dm = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
+                    if (dm) {
+                        if (dm[1] === '>=' || dm[1] === '>') { min = dm[2]; minInc = dm[1] === '>='; }
+                        else { max = dm[2]; maxInc = dm[1] === '<='; }
+                        continue;
+                    }
+                    const gm = d.match(/^([A-Za-z0-9_.]+)(>=|<=|!=|>|<|=)(.*)$/);
+                    if (!gm || WQP_LOCAL_SKIP.has(gm[1]) || WQP_CLIENT_FIELDS.includes(gm[1])) continue;
+                    generic.push({ field: gm[1], op: gm[2], value: gm[3] });
                 }
-                if (!types && hidden === null && !min && !max) return rows;
+                if (!types && hidden === null && !min && !max && !generic.length) return rows;
+                // 字段名对不上时(取不到值)宁可不过滤, 也不要把整池清空
+                for (const g of generic) {
+                    if (!rows.some((r) => wqpResolve(r, g.field) !== undefined)) {
+                        console.log(`[WQP] 本地补过滤跳过 ${g.field}${g.op}${g.value}: 行内无此字段`);
+                        g.skip = true;
+                    }
+                }
                 return rows.filter((r) => {
                     if (types && !types.includes(r.type)) return false;
                     if (hidden !== null && Boolean(r.hidden) !== hidden) return false;
                     const ts = r.dateCreated || '';
                     if (min && (minInc ? ts < min : ts <= min)) return false;
                     if (max && (maxInc ? ts > max : ts >= max)) return false;
+                    for (const g of generic) {
+                        if (g.skip) continue;
+                        const actual = wqpResolve(r, g.field);
+                        if (g.op === '=') {
+                            if (!g.value.split('\u001f').includes(String(actual ?? ''))) return false;
+                        } else if (!wqpCompare(g.op, actual, g.value)) return false;
+                    }
                     return true;
                 });
             }

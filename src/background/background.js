@@ -376,12 +376,14 @@ function injectFetchInterceptor(tabId) {
                         item.is.failedNumPPA = 0;
                         return;
                     }
+                    // 只计硬失败(FAIL/ERROR); WARNING(如 CONCENTRATED_WEIGHT、LOW_2Y_SHARPE 的警告)不算失败,
+                    // 否则几乎每支都 ≥1,「Failed RA < 1」会筛成空
                     item.is.failedNumRA = item.is.checks.filter(check => 
-                        RA_CHECK_NAMES.includes(check.name) && check.result !== 'PASS' && check.result !== 'PENDING'
+                        RA_CHECK_NAMES.includes(check.name) && (check.result === 'FAIL' || check.result === 'ERROR')
                     ).length;
                     
                     item.is.failedNumPPA = item.is.checks.filter(check => 
-                        (PPA_CHECK_NAMES.includes(check.name) && check.result !== 'PASS' && check.result !== 'PENDING') || (check.name === "LOW_SHARPE" && check.value < 1)
+                        (PPA_CHECK_NAMES.includes(check.name) && (check.result === 'FAIL' || check.result === 'ERROR')) || (check.name === "LOW_SHARPE" && check.value < 1)
                     ).length;
                     
                     item.is.WQPPYS = item.is.checks

@@ -405,19 +405,17 @@ function injectFetchInterceptor(tabId) {
             function wqpPoolGet(key) {
                 return new Promise((resolve) => {
                     const reqId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                    const slot = `WQP_POOL_SLOT_${reqId}`;
-                    const timer = setTimeout(() => { chrome.storage.onChanged.removeListener(onChange); resolve(null); }, 20000);
-                    function onChange(changes, area) {
-                        if (area !== 'local' || !(slot in changes)) return;
+                    const timer = setTimeout(() => { window.removeEventListener('message', onMsg); resolve(null); }, 20000);
+                    function onMsg(event) {
+                        if (event.source !== window || event.data?.type !== 'WQP_POOL_DATA' || event.data?.reqId !== reqId) return;
                         clearTimeout(timer);
-                        chrome.storage.onChanged.removeListener(onChange);
-                        chrome.storage.local.remove(slot);
-                        resolve(changes[slot]?.newValue?.data || null);
+                        window.removeEventListener('message', onMsg);
+                        resolve(event.data.data || null);
                     }
-                    chrome.storage.onChanged.addListener(onChange);
+                    window.addEventListener('message', onMsg);
                     try {
                         chrome.runtime.sendMessage({ type: 'WQP_POOL_GET', key, reqId });
-                    } catch (_) { clearTimeout(timer); chrome.storage.onChanged.removeListener(onChange); resolve(null); }
+                    } catch (_) { clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(null); }
                 });
             }
             function wqpPoolSet(key, value) {
@@ -940,11 +938,14 @@ async function wqpPoolSet(key, value) {
 // 内容脚本可主动请求最近 N 条记录
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'WQP_POOL_GET') {
-        // 结果经 chrome.storage.local 回传: MV3 service worker 里异步 sendResponse 会丢结果
-        const slot = `WQP_POOL_SLOT_${msg.reqId}`;
-        wqpPoolGet(msg.key)
-            .then((data) => chrome.storage.local.set({ [slot]: { data: data || null } }))
-            .catch((e) => chrome.storage.local.set({ [slot]: { error: String(e) } }));
+        // 读完再发一条消息回页面(由 ISOLATED 内容脚本转发进 MAIN world):
+        // MV3 service worker 里异步 sendResponse 会丢, 页面 MAIN world 又没有 chrome.storage
+        const tabId = sender.tab?.id;
+        wqpPoolGet(msg.key).then((data) => {
+            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: data || null }).catch(() => {});
+        }).catch(() => {
+            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: null }).catch(() => {});
+        });
         return false;
     }
     if (msg && msg.type === 'WQP_POOL_SET') {

@@ -610,6 +610,11 @@ function injectFetchInterceptor(tabId) {
                         const rows = await loadAlphasForClientQuery(clientQuery.serverUrl);
                         const filtered = wqpApply(rows, clientQuery);
                         const page = wqpPage(filtered, clientQuery);
+                        const start = Math.max(0, clientQuery.offset || 0);
+                        const size = Math.max(1, clientQuery.limit || 10);
+                        // 信封补全 next/previous: 应用的响应解码器校验这两个分页字段
+                        page.next = start + size < filtered.length ? 'wqp://local-next' : null;
+                        page.previous = start > 0 ? 'wqp://local-prev' : null;
                         console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}`);
                         return new Response(JSON.stringify(page), {
                             status: 200,

@@ -92,16 +92,46 @@ export async function saveLlmConfig(input = {}) {
     return sanitizeConfig(next);
 }
 
+// 按括号配对截取第一个完整的 {...}, 比贪婪正则稳: 模型常在 ```json 围栏里回复, 或在 JSON 前后加一句带花括号的话
+function sliceFirstJsonObject(text) {
+    const start = text.indexOf('{');
+    if (start < 0) return '';
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth += 1;
+        else if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) return text.slice(start, i + 1);
+        }
+    }
+    return '';
+}
+
 function extractJsonObject(text) {
     const raw = String(text || '').trim();
     if (!raw) throw new Error('LLM returned an empty response.');
-    try {
-        return JSON.parse(raw);
-    } catch (_) {
-        const match = raw.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error('LLM response is not valid JSON.');
-        return JSON.parse(match[0]);
+    // 依次尝试: 原文 → 每个 ``` 围栏内的内容 → 括号配对截取, 命中即返回
+    const fenced = raw.match(/```(?:json|JSON)?\s*([\s\S]*?)```/g) || [];
+    const candidates = [raw, ...fenced.map((block) => block.replace(/^```(?:json|JSON)?|```$/g, '').trim())];
+    const balanced = sliceFirstJsonObject(raw);
+    if (balanced) candidates.push(balanced);
+    for (const candidate of candidates) {
+        if (!candidate) continue;
+        try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        } catch (_) {
+            // 换下一个候选, 全部失败才报错
+        }
     }
+    throw new Error('LLM response is not valid JSON.');
 }
 
 export async function testLlmConnection(input = {}) {

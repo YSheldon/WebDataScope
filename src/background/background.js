@@ -612,6 +612,45 @@ function injectFetchInterceptor(tabId) {
             const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount' };
             const WQP_SERVER_REWRITES = {};
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
+            // 列定义名(filters.maxProdCorr)与 Unicode 运算符(≥1)在请求里也可能原样出现, 统一成 field<op>value
+            const WQP_UNICODE_OPS = { '\u2265': '>=', '\u2264': '<=', '\u2260': '!=' };
+            function wqpNormalizeToken(token) {
+                let t = String(token).replace(/^(?:filters|filter)\./i, '');
+                t = t.replace(/[\u2265\u2264\u2260]/g, (ch) => WQP_UNICODE_OPS[ch]);
+                const m = t.match(/^([A-Za-z0-9_.]+):(.+)$/); // 只在冒号前全是字段名字符时才拆, 免得砍掉 ISO 时间里的冒号
+                if (!m) return t;
+                const [, head, tail] = m;
+                if (/^(?:>=|<=|!=|=|<|>)/.test(tail)) return head + tail;
+                return `${head}=${tail}`;
+            }
+            // 最近一次虚拟列查询, 供控制台自查命令复算
+            let wqpLastQuery = null;
+            window.WQP_DEBUG_ALPHA = async (alphaId) => {
+                if (!wqpLastQuery) return { error: '还没有记录到虚拟列查询, 先在列表上点一次筛选' };
+                const { url, parsed } = wqpLastQuery;
+                const rows = await loadAlphasForClientQuery(parsed.serverUrl);
+                const row = rows.find((r) => r.id === alphaId);
+                if (!row) return { found: false, poolRows: rows.length, url, hint: '该 alpha 不在本地库里' };
+                const details = (parsed.clientFilters || []).map((f) => {
+                    const value = wqpValueOf(row, f.field);
+                    const corrNa = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'].includes(f.field)
+                        && !Number.isFinite(value) && (f.op === '<' || f.op === '<=');
+                    return `${f.field} ${f.op} ${f.value} | 值=${Number.isNaN(value) ? 'NaN(没查过)' : value} | ${corrNa || wqpCompare(f.op, value, f.value) ? '通过' : '被筛掉'}`;
+                });
+                const kept = wqpApply(wqpConstrain(rows, url), parsed);
+                return {
+                    found: true, poolRows: rows.length, url, details,
+                    surviveConstrain: wqpConstrain(rows, url).some((r) => r.id === alphaId),
+                    surviveFilter: kept.some((r) => r.id === alphaId),
+                    keptTotal: kept.length,
+                    values: {
+                        type: row.type, region: row.settings?.region, universe: row.settings?.universe,
+                        sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
+                        operatorCount: row.regular?.operatorCount, operatorCountPlatform: row.regular?.operatorCountPlatform,
+                        maxProdCorr: row.maxProdCorr, dateCreated: row.dateCreated,
+                    },
+                };
+            };
 
             // Prod/Pool/Self Corr 的值不在列表 API 里, 来自插件查过的本地记录(localStorage)
             let wqpMemoCache = null;
@@ -687,7 +726,7 @@ function injectFetchInterceptor(tabId) {
                 let limit = 10, offset = 0, clientOrder = null;
                 const clientFilters = [], serverParts = [];
                 for (const part of parts) {
-                    const decoded = decodeURIComponent(part.replace(/\+/g, ' '));
+                    const decoded = wqpNormalizeToken(decodeURIComponent(part.replace(/\+/g, ' ')));
                     if (decoded.startsWith('limit=')) { limit = Number(decoded.slice(6)) || 10; continue; }
                     if (decoded.startsWith('offset=')) { offset = Number(decoded.slice(7)) || 0; continue; }
                     if (decoded.startsWith('order=')) {
@@ -729,7 +768,7 @@ function injectFetchInterceptor(tabId) {
                 const q = String(rawUrl).split('?')[1] || '';
                 for (const part of q.split('&')) {
                     let d;
-                    try { d = decodeURIComponent(part.replace(/\+/g, ' ')); } catch (_) { continue; }
+                    try { d = wqpNormalizeToken(decodeURIComponent(part.replace(/\+/g, ' '))); } catch (_) { continue; }
                     if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
                     if (d.startsWith('hidden=')) { hidden = d.slice(7) === 'true'; continue; }
                     const dm = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
@@ -826,6 +865,7 @@ function injectFetchInterceptor(tabId) {
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
                 const clientQuery = wqpParseUrl(url);
+                if (clientQuery?.active) wqpLastQuery = { url, parsed: clientQuery };
                 console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
                 if (clientQuery?.active) {
                     try {

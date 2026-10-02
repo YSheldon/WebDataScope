@@ -234,6 +234,7 @@ function injectFetchInterceptor(tabId) {
         world: "MAIN", // 必须指定 MAIN，否则无法覆盖页面本身的 window.fetch
         args: [extBase],
         func: (extBase) => {
+            console.log(`[WQP] fetch 拦截器 v${chrome.runtime.getManifest().version} 已注入`);
 
             function postCapturedSessionToken(value) {
                 const text = String(value || '');

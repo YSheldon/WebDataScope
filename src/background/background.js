@@ -424,7 +424,9 @@ function injectFetchInterceptor(tabId) {
             }
 
             async function loadAlphasForClientQuery(serverUrl) {
-                const cached = clientAlphaCache.get(serverUrl);
+                // 缓存键归一化: 去掉 order/limit/offset, 同一筛选集只拉一次(应用重试不再重头拉)
+                const cacheKey = serverUrl.replace(/([?&])(order|limit|offset)=[^&]*/g, '$1').replace(/[?&]+$/, '');
+                const cached = clientAlphaCache.get(cacheKey);
                 if (cached && Date.now() - cached.at < 120000) return cached.rows;
                 const rows = [];
                 const seenIds = new Set();
@@ -463,7 +465,7 @@ function injectFetchInterceptor(tabId) {
                     if (page.length < 100) break;   // 不足一页 = 到底
                     cursor = oldest;
                 }
-                clientAlphaCache.set(serverUrl, { at: Date.now(), rows });
+                clientAlphaCache.set(cacheKey, { at: Date.now(), rows });
                 return rows;
             }
 
@@ -612,9 +614,11 @@ function injectFetchInterceptor(tabId) {
                         const page = wqpPage(filtered, clientQuery);
                         const start = Math.max(0, clientQuery.offset || 0);
                         const size = Math.max(1, clientQuery.limit || 10);
-                        // 信封补全 next/previous: 应用的响应解码器校验这两个分页字段
-                        page.next = start + size < filtered.length ? 'wqp://local-next' : null;
-                        page.previous = start > 0 ? 'wqp://local-prev' : null;
+                        // 信封按真实 API 形状补全(id/name/count/next/previous): 应用解码器缺字段就丢弃响应并重试
+                        page.id = 'wqp-client-page';
+                        page.name = 'wqp-client-page';
+                        page.next = start + size < filtered.length ? 'https://api.worldquantbrain.com/wqp/next' : null;
+                        page.previous = start > 0 ? 'https://api.worldquantbrain.com/wqp/prev' : null;
                         console.log(`[WQP] 虚拟列本地筛选/排序 ${page.results.length}/${page.count}`);
                         return new Response(JSON.stringify(page), {
                             status: 200,

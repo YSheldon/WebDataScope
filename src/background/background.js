@@ -410,6 +410,7 @@ function injectFetchInterceptor(tabId) {
                         if (event.source !== window || event.data?.type !== 'WQP_POOL_DATA' || event.data?.reqId !== reqId) return;
                         clearTimeout(timer);
                         window.removeEventListener('message', onMsg);
+                        if (event.data.keySummary) console.log(`[WQP] 库内实际的键: ${event.data.keySummary}`);
                         resolve(event.data.data || null);
                     }
                     window.addEventListener('message', onMsg);
@@ -925,9 +926,9 @@ async function wqpPoolGet(key) {
         req.onsuccess = () => { const c = req.result; if (c) { out.push([c.key, c.value]); c.continue(); } else resolve(out); };
         req.onerror = () => resolve(out);
     });
-    console.log(`[WQP][bg] 库内键: ${all.map(([k, v]) => `${k} => ${v?.rows?.length || 0}行`).join(' | ') || '(空)'}`);
+    const keySummary = all.map(([k, v]) => `${k} => ${v?.rows?.length || 0}行`).join(' | ') || '(空)';
     const hit = all.find(([k]) => k === key);
-    return hit ? hit[1] : null;
+    return { data: hit ? hit[1] : null, keySummary };
 }
 async function wqpPoolSet(key, value) {
     const db = await wqpPoolOpen();
@@ -945,10 +946,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // 读完再发一条消息回页面(由 ISOLATED 内容脚本转发进 MAIN world):
         // MV3 service worker 里异步 sendResponse 会丢, 页面 MAIN world 又没有 chrome.storage
         const tabId = sender.tab?.id;
-        wqpPoolGet(msg.key).then((data) => {
-            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: data || null }).catch(() => {});
+        wqpPoolGet(msg.key).then((res) => {
+            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: res?.data || null, keySummary: res?.keySummary || '(空)' }).catch(() => {});
         }).catch(() => {
-            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: null }).catch(() => {});
+            if (tabId) chrome.tabs.sendMessage(tabId, { type: 'WQP_POOL_DATA', reqId: msg.reqId, data: null, keySummary: '读取异常' }).catch(() => {});
         });
         return false;
     }

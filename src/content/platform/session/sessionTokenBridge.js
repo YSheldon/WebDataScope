@@ -4,7 +4,7 @@
     // 后台读完本地库后经这里转进页面 MAIN world(MAIN world 没有 chrome.storage / chrome.tabs)
     chrome.runtime.onMessage.addListener((msg) => {
         if (!msg || msg.type !== 'WQP_POOL_DATA') return;
-        window.postMessage({ type: 'WQP_POOL_DATA', reqId: msg.reqId, data: msg.data }, '*');
+        window.postMessage({ type: 'WQP_POOL_DATA', reqId: msg.reqId, data: msg.data, keySummary: msg.keySummary }, '*');
     });
 
     window.addEventListener('message', (event) => {

@@ -927,7 +927,9 @@ async function wqpPoolGet(key) {
         req.onerror = () => resolve(out);
     });
     const keySummary = all.map(([k, v]) => `${k} => ${v?.rows?.length || 0}行`).join(' | ') || '(空)';
-    const hit = all.find(([k]) => k === key);
+    // 精确键命中优先; 没命中就取行数最多的那份(库里本来就只有一份未提交池, 避免键有细微差异时读成空)
+    const hit = all.find(([k]) => k === key)
+        || all.slice().sort((a, b) => (b[1]?.rows?.length || 0) - (a[1]?.rows?.length || 0))[0];
     return { data: hit ? hit[1] : null, keySummary };
 }
 async function wqpPoolSet(key, value) {
@@ -960,8 +962,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'WQP_POOL_IMPORT') {
         // 迁移: 把 1.10.25 存在页面源 IndexedDB 的库分批并入扩展源库(按 id 去重)
         (async () => {
-            const cur = (await wqpPoolGet(msg.key)) || { rows: [], newest: '' };
-            const have = new Set(cur.rows.map((r) => r.id));
+            const cur = (await wqpPoolGet(msg.key))?.data || { rows: [], newest: '' };
+            const have = new Set((cur.rows || []).map((r) => r.id));
             for (const row of msg.rows || []) {
                 if (row?.id && have.has(row.id)) continue;
                 if (row?.id) have.add(row.id);

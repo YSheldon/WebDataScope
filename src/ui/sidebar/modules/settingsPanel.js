@@ -221,7 +221,7 @@ export async function initSettingsPanel() {
         setLlmModelHint('');
         if (!cherry) return;
         const baseUrlInput = document.getElementById(ids.llmBaseUrl);
-        if (!baseUrlInput.value.trim()) baseUrlInput.value = 'http://127.0.0.1:3000/api/v1';
+        if (!baseUrlInput.value.trim()) baseUrlInput.value = 'http://127.0.0.1:23333/v1';
         await loadLlmModels();
     });
     document.getElementById(ids.llmFetchModels)?.addEventListener('click', () => { loadLlmModels(); });

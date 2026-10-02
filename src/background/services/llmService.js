@@ -2,10 +2,10 @@ import { getLocalValue, setLocalValue } from './storageService.js';
 
 const CONFIG_KEY = 'WQP_LLM_Config';
 
-// Cherry Studio 内置 API Server 是 OpenAI 兼容的, 默认端口 3000, 路径挂在 /api 下
+// Cherry Studio 内置 API Server 是 OpenAI 兼容的, 本机实测 127.0.0.1:23333, 路径是 /v1(不是 /api/v1), 需要 API Key
 const CHERRY_BASE_URLS = [
-    'http://127.0.0.1:3000/api/v1',
-    'http://localhost:3000/api/v1',
+    'http://127.0.0.1:23333/v1',
+    'http://localhost:23333/v1',
 ];
 const PROVIDER_CUSTOM = 'custom';
 const PROVIDER_CHERRY = 'cherry';
@@ -132,8 +132,12 @@ async function requestModelList(baseUrl, apiKey, timeoutMs = 6000) {
     const response = await fetch(url, { headers, ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        const detail = data?.error?.message || data?.message || response.statusText;
-        throw new Error(`HTTP ${response.status}: ${detail}`);
+        const detail = data?.error?.message || data?.message
+            || (typeof data?.error === 'string' ? data.error : '') || response.statusText;
+        const hint = response.status === 401
+            ? '（Cherry Studio 需要 API Key，请在下方 API Key 栏填 Cherry「设置 → API 服务」里的密钥）'
+            : response.status === 403 ? '（API Key 不对）' : '';
+        throw new Error(`HTTP ${response.status}: ${detail}${hint}`);
     }
     const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
     const models = list

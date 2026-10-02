@@ -401,30 +401,38 @@ function injectFetchInterceptor(tabId) {
             const clientAlphaCache = new Map();
             const clientAlphaInflight = new Map();
 
-            // 全库结果持久化到扩展后台的 IndexedDB(扩展源, 所有标签页共享): 首次全量, 之后只增量
-            function wqpPoolGet(key) {
-                return new Promise((resolve) => {
-                    const reqId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                    const timer = setTimeout(() => { window.removeEventListener('message', onMsg); resolve(null); }, 20000);
-                    function onMsg(event) {
-                        if (event.source !== window || event.data?.type !== 'WQP_POOL_DATA' || event.data?.reqId !== reqId) return;
-                        clearTimeout(timer);
-                        window.removeEventListener('message', onMsg);
-                        if (event.data.keySummary) console.log(`[WQP] 库内实际的键: ${event.data.keySummary}`);
-                        resolve(event.data.data || null);
-                    }
-                    window.addEventListener('message', onMsg);
-                    try {
-                        chrome.runtime.sendMessage({ type: 'WQP_POOL_GET', key, reqId });
-                    } catch (_) { clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(null); }
+            // 全库存在页面自己的 IndexedDB(同站点所有标签页共享, 1.10.25 拉的那批也在这里): 直接读写, 不经过后台消息
+            function wqpPoolDb() {
+                return new Promise((resolve, reject) => {
+                    const req = indexedDB.open('WQP_AlphaPool', 1);
+                    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains('pools')) db.createObjectStore('pools'); };
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
                 });
             }
-            function wqpPoolSet(key, value) {
-                return new Promise((resolve) => {
-                    try {
-                        chrome.runtime.sendMessage({ type: 'WQP_POOL_SET', key, value }, () => resolve());
-                    } catch (_) { resolve(); }
-                });
+            async function wqpPoolGet(key) {
+                try {
+                    const db = await wqpPoolDb();
+                    const rec = await new Promise((resolve) => {
+                        const req = db.transaction('pools', 'readonly').objectStore('pools').get(key);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => resolve(null);
+                    });
+                    db.close();
+                    return rec;
+                } catch (_) { return null; }
+            }
+            async function wqpPoolSet(key, value) {
+                try {
+                    const db = await wqpPoolDb();
+                    await new Promise((resolve) => {
+                        const tx = db.transaction('pools', 'readwrite');
+                        tx.objectStore('pools').put(value, key);
+                        tx.oncomplete = () => resolve();
+                        tx.onerror = () => resolve();
+                    });
+                    db.close();
+                } catch (_) { /* 写入失败不影响本次筛选 */ }
             }
 
             // 一次性迁移: 1.10.25 把库存在页面源 IndexedDB, 1.10.26 起改存扩展源。
@@ -513,7 +521,6 @@ function injectFetchInterceptor(tabId) {
                 if (mem && Date.now() - mem.at < 60000) return mem.rows; // 1 分钟内的重复请求(应用重试)直接用内存
                 if (clientAlphaInflight.has(cacheKey)) return clientAlphaInflight.get(cacheKey); // 同一个拉取不并发重入
                 const task = (async () => {
-                    await wqpMigratePoolOnce(); // 先把 1.10.25 的旧库迁进扩展源, 避免升级后重下
                     const stored = await wqpPoolGet(cacheKey); // { rows, newest } 或 null
                     console.log(`[WQP] 本地库读取 key=${cacheKey} 已有 ${stored?.rows?.length || 0} 行`);
                     const have = new Set((stored?.rows || []).map((r) => r.id));

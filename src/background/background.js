@@ -234,7 +234,6 @@ function injectFetchInterceptor(tabId) {
         world: "MAIN", // 必须指定 MAIN，否则无法覆盖页面本身的 window.fetch
         args: [extBase],
         func: (extBase) => {
-            console.log(`[WQP] fetch 拦截器 v${chrome.runtime.getManifest().version} 已注入`);
 
             function postCapturedSessionToken(value) {
                 const text = String(value || '');
@@ -358,33 +357,6 @@ function injectFetchInterceptor(tabId) {
                     'LOW_INVESTABILITY_CONSTRAINED_SHARPE'
                 ]));
 
-                // Operator Count 重算: 平台把表达式开头的负号算作一个算子(实测平台数 = 算子数 + 前导负号),
-                // 负号按用户口径计入; ts_backfill / group_backfill 是豁免壳, 不计入
-                const WQP_OPERATOR_NAMES = new Set(`add multiply sign subtract pasteurize log max abs divide min signed_power
-                    inverse sqrt reverse power densify or and not is_nan less equal greater if_else not_equal less_equal
-                    greater_equal ts_corr ts_zscore ts_returns ts_product ts_std_dev ts_backfill days_from_last_change
-                    last_diff_value ts_scale ts_step ts_sum ts_av_diff ts_kurtosis ts_mean ts_arg_max ts_rank ts_ir ts_delay
-                    ts_quantile ts_count_nans ts_covariance ts_decay_linear ts_arg_min ts_regression ts_max_diff
-                    kth_element hump ts_delta ts_target_tvr_decay ts_target_tvr_hump winsorize rank vector_neut zscore
-                    scale normalize quantile vec_min vec_count vec_sum vec_max vec_avg vec_stddev vec_range bucket tail
-                    trade_when group_mean group_rank group_backfill group_scale group_count group_zscore group_std_dev
-                    group_sum group_neutralize`.split(/\s+/).filter(Boolean));
-                const WQP_FREE_OPERATORS = new Set(['ts_backfill', 'group_backfill']);
-                function wqpOperatorTokens(code) {
-                    const tokens = String(code || '').match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-                    return tokens.filter((t) => WQP_OPERATOR_NAMES.has(t));
-                }
-                function wqpRewriteOperatorCount(regular) {
-                    if (!regular?.code) return;
-                    const platform = Number(regular.operatorCount);
-                    regular.operatorCountPlatform = Number.isFinite(platform) ? platform : null;
-                    const ops = wqpOperatorTokens(regular.code);
-                    const noShell = ops.filter((t) => !WQP_FREE_OPERATORS.has(t)).length;
-                    const sign = /^\s*-/.test(regular.code) ? 1 : 0; // 前导负号也算一个算子
-                    regular.operatorCount = noShell + sign;
-                    regular.operatorCountNoShell = noShell;
-                }
-
                 // 2. 核心逻辑：遍历数据，统计不合格数量并新增字段
                 // 
                 // 比如sub-univers ,robust 其实能不能把那些fail的具体值做出来，比如robust 那些的值
@@ -394,7 +366,6 @@ function injectFetchInterceptor(tabId) {
                 if (!Array.isArray(originalData?.results)) return originalData;
                 const prodMemoCache = readProdMemoCache();
                 originalData.results.forEach(item => {
-                    wqpRewriteOperatorCount(item?.regular);
                     item.maxProdCorr = getMaxProdCorr(prodMemoCache, item?.id);
                     item.maxPoolProdCorr = getMaxPoolProdCorr(prodMemoCache, item?.id);
                     item.maxSelfCorr = getMaxSelfCorr(prodMemoCache, item?.id);
@@ -594,8 +565,6 @@ function injectFetchInterceptor(tabId) {
                         cursor = oldest;
                     }
                     const rows = fresh.concat(stored?.rows || []);
-                    // 老库里存的是平台口径的 operatorCount, 读出来统一按用户口径重算
-                    for (const row of rows) wqpRewriteOperatorCount(row?.regular);
                     let newest = watermark;
                     for (const row of fresh) if (row.dateCreated && row.dateCreated > newest) newest = row.dateCreated;
                     await wqpPoolSet(cacheKey, { rows, newest });
@@ -617,46 +586,6 @@ function injectFetchInterceptor(tabId) {
             const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount' };
             const WQP_SERVER_REWRITES = {};
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
-            // 列定义名(filters.maxProdCorr)与 Unicode 运算符(≥1)在请求里也可能原样出现, 统一成 field<op>value
-            const WQP_UNICODE_OPS = { '\u2265': '>=', '\u2264': '<=', '\u2260': '!=' };
-            function wqpNormalizeToken(token) {
-                let t = String(token).replace(/^(?:filters|filter)\./i, '');
-                t = t.replace(/[\u2265\u2264\u2260]/g, (ch) => WQP_UNICODE_OPS[ch]);
-                const m = t.match(/^([A-Za-z0-9_.]+):(.+)$/); // 只在冒号前全是字段名字符时才拆, 免得砍掉 ISO 时间里的冒号
-                if (!m) return t;
-                const [, head, tail] = m;
-                if (/^(?:>=|<=|!=|=|<|>)/.test(tail)) return head + tail;
-                return `${head}=${tail}`;
-            }
-            // 最近一次虚拟列查询, 供控制台自查命令复算
-            let wqpLastQuery = null;
-            window.WQP_DEBUG_ALPHA = async (alphaId) => {
-                if (!wqpLastQuery) return { error: '还没有记录到虚拟列查询, 先在列表上点一次筛选' };
-                const { url, parsed } = wqpLastQuery;
-                const rows = await loadAlphasForClientQuery(parsed.serverUrl);
-                const row = rows.find((r) => r.id === alphaId);
-                if (!row) return { found: false, poolRows: rows.length, url, hint: '该 alpha 不在本地库里' };
-                const details = (parsed.clientFilters || []).map((f) => {
-                    const value = wqpValueOf(row, f.field);
-                    const corrNa = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'].includes(f.field)
-                        && !Number.isFinite(value) && (f.op === '<' || f.op === '<=');
-                    return `${f.field} ${f.op} ${f.value} | 值=${Number.isNaN(value) ? 'NaN(没查过)' : value} | ${corrNa || wqpCompare(f.op, value, f.value) ? '通过' : '被筛掉'}`;
-                });
-                const kept = wqpApply(wqpConstrain(rows, url), parsed);
-                return {
-                    found: true, poolRows: rows.length, url, details,
-                    surviveConstrain: wqpConstrain(rows, url).some((r) => r.id === alphaId),
-                    surviveFilter: kept.some((r) => r.id === alphaId),
-                    keptTotal: kept.length,
-                    values: {
-                        type: row.type, region: row.settings?.region, universe: row.settings?.universe,
-                        sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
-                        operatorCount: row.regular?.operatorCount, operatorCountPlatform: row.regular?.operatorCountPlatform,
-                        operatorCountNoShell: row.regular?.operatorCountNoShell,
-                        maxProdCorr: row.maxProdCorr, dateCreated: row.dateCreated,
-                    },
-                };
-            };
 
             // Prod/Pool/Self Corr 的值不在列表 API 里, 来自插件查过的本地记录(localStorage)
             let wqpMemoCache = null;
@@ -732,7 +661,7 @@ function injectFetchInterceptor(tabId) {
                 let limit = 10, offset = 0, clientOrder = null;
                 const clientFilters = [], serverParts = [];
                 for (const part of parts) {
-                    const decoded = wqpNormalizeToken(decodeURIComponent(part.replace(/\+/g, ' ')));
+                    const decoded = decodeURIComponent(part.replace(/\+/g, ' '));
                     if (decoded.startsWith('limit=')) { limit = Number(decoded.slice(6)) || 10; continue; }
                     if (decoded.startsWith('offset=')) { offset = Number(decoded.slice(7)) || 0; continue; }
                     if (decoded.startsWith('order=')) {
@@ -751,18 +680,7 @@ function injectFetchInterceptor(tabId) {
                 const serverUrl = `${url.origin}${url.pathname}${serverParts.length ? `?${serverParts.join('&')}` : ''}`;
                 return { limit, offset, clientOrder, clientFilters, serverUrl, active: Boolean(clientOrder || clientFilters.length) };
             }
-            // 服务端筛选参数在本地库上补做: 库只按 status 存整池, 这些条件不补就会被丢掉
-            const WQP_LOCAL_SKIP = new Set(['limit', 'offset', 'order', 'type', 'hidden', 'status']);
-            function wqpPath(row, path) {
-                return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), row);
-            }
-            // 前端有时用短名(region)有时用全路径(settings.region), 两边都试
-            function wqpResolve(row, field) {
-                const direct = wqpPath(row, field);
-                if (direct !== undefined) return direct;
-                if (String(field).includes('.')) return undefined;
-                return row.settings?.[field] ?? row.is?.[field];
-            }
+            // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤
             function wqpConstrain(rows, rawUrl) {
                 let types = null;
                 let hidden = null;
@@ -770,44 +688,24 @@ function injectFetchInterceptor(tabId) {
                 let max = null;
                 let minInc = true;
                 let maxInc = false;
-                const generic = [];
                 const q = String(rawUrl).split('?')[1] || '';
                 for (const part of q.split('&')) {
                     let d;
-                    try { d = wqpNormalizeToken(decodeURIComponent(part.replace(/\+/g, ' '))); } catch (_) { continue; }
+                    try { d = decodeURIComponent(part.replace(/\+/g, ' ')); } catch (_) { continue; }
                     if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
                     if (d.startsWith('hidden=')) { hidden = d.slice(7) === 'true'; continue; }
-                    const dm = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
-                    if (dm) {
-                        if (dm[1] === '>=' || dm[1] === '>') { min = dm[2]; minInc = dm[1] === '>='; }
-                        else { max = dm[2]; maxInc = dm[1] === '<='; }
-                        continue;
-                    }
-                    const gm = d.match(/^([A-Za-z0-9_.]+)(>=|<=|!=|>|<|=)(.*)$/);
-                    if (!gm || WQP_LOCAL_SKIP.has(gm[1]) || WQP_CLIENT_FIELDS.includes(gm[1])) continue;
-                    generic.push({ field: gm[1], op: gm[2], value: gm[3] });
+                    const m = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
+                    if (!m) continue;
+                    if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
+                    else { max = m[2]; maxInc = m[1] === '<='; }
                 }
-                if (!types && hidden === null && !min && !max && !generic.length) return rows;
-                // 字段名对不上时(取不到值)宁可不过滤, 也不要把整池清空
-                for (const g of generic) {
-                    if (!rows.some((r) => wqpResolve(r, g.field) !== undefined)) {
-                        console.log(`[WQP] 本地补过滤跳过 ${g.field}${g.op}${g.value}: 行内无此字段`);
-                        g.skip = true;
-                    }
-                }
+                if (!types && hidden === null && !min && !max) return rows;
                 return rows.filter((r) => {
                     if (types && !types.includes(r.type)) return false;
                     if (hidden !== null && Boolean(r.hidden) !== hidden) return false;
                     const ts = r.dateCreated || '';
                     if (min && (minInc ? ts < min : ts <= min)) return false;
                     if (max && (maxInc ? ts > max : ts >= max)) return false;
-                    for (const g of generic) {
-                        if (g.skip) continue;
-                        const actual = wqpResolve(r, g.field);
-                        if (g.op === '=') {
-                            if (!g.value.split('\u001f').includes(String(actual ?? ''))) return false;
-                        } else if (!wqpCompare(g.op, actual, g.value)) return false;
-                    }
                     return true;
                 });
             }
@@ -871,7 +769,6 @@ function injectFetchInterceptor(tabId) {
                 captureSessionTokenFromFetchArgs(args[0], args[1]);
 
                 const clientQuery = wqpParseUrl(url);
-                if (clientQuery?.active) wqpLastQuery = { url, parsed: clientQuery };
                 console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
                 if (clientQuery?.active) {
                     try {

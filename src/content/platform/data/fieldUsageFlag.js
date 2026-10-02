@@ -1,7 +1,5 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-// 版本号直接读 manifest, 不再手写(手写的会跟 manifest 漂移, 看到旧号会误判成没更新)
-const WQP_VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (_) { return '?'; } })();
-console.log(`[WQP] fieldUsageFlag v${WQP_VERSION} loaded`);
+console.log('[WQP] fieldUsageFlag v1.10.36 loaded');
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,

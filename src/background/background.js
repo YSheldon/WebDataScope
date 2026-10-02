@@ -431,7 +431,8 @@ function injectFetchInterceptor(tabId) {
                 let cursor = null;              // dateCreated<= 游标(最新优先): 绕过 API 的深分页 offset 上限
                 const joiner = serverUrl.includes('?') ? '&' : '?';
                 let failedPages = 0;
-                for (let guard = 0; guard < 300; guard += 1) {
+                const PULL_CAP = 3000;          // 最新优先拉取上限: 覆盖近期挖矿, 避免全池长等
+                for (let guard = 0; guard < 300 && rows.length < PULL_CAP; guard += 1) {
                     let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
                     if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;
                     let res;
@@ -457,7 +458,7 @@ function injectFetchInterceptor(tabId) {
                         const ts = row.dateCreated;
                         if (ts && (!oldest || ts < oldest)) oldest = ts;
                     }
-                    console.log(`[WQP] 虚拟列全库拉取(最新优先) 已取 ${rows.length} 行`);
+                    console.log(`[WQP] 虚拟列全库拉取(最新优先) 已取 ${rows.length} 行${rows.length >= PULL_CAP ? '(达上限)' : ''}`);
                     if (!fresh) break;              // 游标无进展(整页同一时间戳), 防死循环
                     if (page.length < 100) break;   // 不足一页 = 到底
                     cursor = oldest;

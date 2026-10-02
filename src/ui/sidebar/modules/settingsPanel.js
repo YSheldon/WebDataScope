@@ -26,6 +26,19 @@ const ids = {
 };
 
 let hasSavedLlmApiKey = false;
+let stashedCustomBaseUrl = '';
+let cherryBaseUrl = '';
+
+// Cherry 的地址以 background 里那份为准, 这里只作兜底
+async function cherryDefaultBaseUrl() {
+    if (cherryBaseUrl) return cherryBaseUrl;
+    try {
+        const result = await sendMessage('WQP_LLM_CHERRY_BASE_URLS');
+        if (Array.isArray(result?.baseUrls) && result.baseUrls.length) cherryBaseUrl = result.baseUrls[0];
+    } catch (_) { /* 用兜底值 */ }
+    if (!cherryBaseUrl) cherryBaseUrl = 'http://127.0.0.1:23333/v1';
+    return cherryBaseUrl;
+}
 
 function currentProvider() {
     return document.getElementById(ids.llmProvider)?.value === 'cherry' ? 'cherry' : 'custom';
@@ -219,10 +232,17 @@ export async function initSettingsPanel() {
     document.getElementById(ids.llmProvider)?.addEventListener('change', async () => {
         const cherry = applyProviderVisibility();
         setLlmModelHint('');
-        if (!cherry) return;
         const baseUrlInput = document.getElementById(ids.llmBaseUrl);
-        if (!baseUrlInput.value.trim()) baseUrlInput.value = 'http://127.0.0.1:23333/v1';
-        await loadLlmModels();
+        if (cherry) {
+            // 选本机就直接切到 Cherry 的地址, 不管原来填的是什么
+            stashedCustomBaseUrl = baseUrlInput.value.trim();
+            baseUrlInput.value = await cherryDefaultBaseUrl();
+            await loadLlmModels();
+        } else if (stashedCustomBaseUrl) {
+            // 切回自定义时把原来的地址还回去, 免得把已有配置冲掉
+            baseUrlInput.value = stashedCustomBaseUrl;
+            stashedCustomBaseUrl = '';
+        }
     });
     document.getElementById(ids.llmFetchModels)?.addEventListener('click', () => { loadLlmModels(); });
     applyProviderVisibility();
@@ -313,6 +333,12 @@ export async function initSettingsPanel() {
     else errors.push(llmResult.reason?.message || 'AI 设置读取失败');
     // 选了 Cherry 就自动把模型列表拉下来, 不用手点
     if (llmResult.status === 'fulfilled' && (llmResult.value?.provider === 'cherry')) {
+        // 早先版本存过错的地址(3000/api/v1), 这里纠正成本机真实端点
+        const saved = llmResult.value?.baseUrl || '';
+        const wanted = await cherryDefaultBaseUrl();
+        if (saved !== wanted && /127\.0\.0\.1|localhost/.test(saved)) {
+            document.getElementById(ids.llmBaseUrl).value = wanted;
+        }
         await loadLlmModels();
     }
     setStatus(errors.length ? `设置加载失败：${errors.join('；')}` : '', errors.length ? 'error' : '');

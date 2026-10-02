@@ -433,7 +433,7 @@ function injectFetchInterceptor(tabId) {
                 let cursor = null;              // dateCreated<= 游标(最新优先): 绕过 API 的深分页 offset 上限
                 const joiner = serverUrl.includes('?') ? '&' : '?';
                 let failedPages = 0;
-                const PULL_CAP = 3000;          // 最新优先拉取上限: 覆盖近期挖矿, 避免全池长等
+                const PULL_CAP = 20000;         // 覆盖整个筛选窗口(查询自带 dateCreated 下界), 3000 会把窗口后段的合格 alpha 截掉
                 for (let guard = 0; guard < 300 && rows.length < PULL_CAP; guard += 1) {
                     let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
                     if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;

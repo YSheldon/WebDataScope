@@ -574,8 +574,16 @@ function injectFetchInterceptor(tabId) {
             }
             function wqpApply(rows, parsed) {
                 let out = Array.isArray(rows) ? rows.slice() : [];
+                const CORR_FIELDS = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'];
                 for (const filter of parsed.clientFilters || []) {
-                    out = out.filter((row) => wqpCompare(filter.op, wqpValueOf(row, filter.field), filter.value));
+                    out = out.filter((row) => {
+                        const value = wqpValueOf(row, filter.field);
+                        // 没查过 corr 的(值为 NaN)按用户口径视为满足 < 阈值
+                        if (CORR_FIELDS.includes(filter.field) && !Number.isFinite(value) && (filter.op === '<' || filter.op === '<=')) {
+                            return true;
+                        }
+                        return wqpCompare(filter.op, value, filter.value);
+                    });
                 }
                 if (parsed.clientOrder) {
                     const { field, desc } = parsed.clientOrder;

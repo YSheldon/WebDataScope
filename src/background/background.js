@@ -401,39 +401,20 @@ function injectFetchInterceptor(tabId) {
             const clientAlphaCache = new Map();
             const clientAlphaInflight = new Map();
 
-            // 全库结果持久化到 IndexedDB: 首次全量拉取, 之后只增量补新增的 alpha
-            const WQP_POOL_DB = 'WQP_AlphaPool';
-            function wqpPoolOpen() {
-                return new Promise((resolve, reject) => {
-                    const req = indexedDB.open(WQP_POOL_DB, 1);
-                    req.onupgradeneeded = () => {
-                        const db = req.result;
-                        if (!db.objectStoreNames.contains('pools')) db.createObjectStore('pools');
-                    };
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => reject(req.error);
+            // 全库结果持久化到扩展后台的 IndexedDB(扩展源, 所有标签页共享): 首次全量, 之后只增量
+            function wqpPoolGet(key) {
+                return new Promise((resolve) => {
+                    try {
+                        chrome.runtime.sendMessage({ type: 'WQP_POOL_GET', key }, (resp) => resolve(resp?.data || null));
+                    } catch (_) { resolve(null); }
                 });
             }
-            async function wqpPoolGet(key) {
-                try {
-                    const db = await wqpPoolOpen();
-                    return await new Promise((resolve) => {
-                        const req = db.transaction('pools', 'readonly').objectStore('pools').get(key);
-                        req.onsuccess = () => resolve(req.result || null);
-                        req.onerror = () => resolve(null);
-                    });
-                } catch (_) { return null; }
-            }
-            async function wqpPoolSet(key, value) {
-                try {
-                    const db = await wqpPoolOpen();
-                    await new Promise((resolve) => {
-                        const tx = db.transaction('pools', 'readwrite');
-                        tx.objectStore('pools').put(value, key);
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => resolve();
-                    });
-                } catch (_) { /* 持久化失败不影响本次筛选结果 */ }
+            function wqpPoolSet(key, value) {
+                return new Promise((resolve) => {
+                    try {
+                        chrome.runtime.sendMessage({ type: 'WQP_POOL_SET', key, value }, () => resolve());
+                    } catch (_) { resolve(); }
+                });
             }
 
             async function fetchAlphasPage(pageUrl) {
@@ -864,8 +845,47 @@ try {
     console.warn('webRequest listeners failed to register', e);
 }
 
+// 未提交池本地库(扩展源 IndexedDB, 所有标签页共享): 首次全量, 之后增量
+const WQP_POOL_DB = 'WQP_AlphaPool';
+function wqpPoolOpen() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(WQP_POOL_DB, 1);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('pools')) db.createObjectStore('pools');
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function wqpPoolGet(key) {
+    const db = await wqpPoolOpen();
+    return new Promise((resolve) => {
+        const req = db.transaction('pools', 'readonly').objectStore('pools').get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+    });
+}
+async function wqpPoolSet(key, value) {
+    const db = await wqpPoolOpen();
+    return new Promise((resolve) => {
+        const tx = db.transaction('pools', 'readwrite');
+        tx.objectStore('pools').put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+    });
+}
+
 // 内容脚本可主动请求最近 N 条记录
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'WQP_POOL_GET') {
+        wqpPoolGet(msg.key).then((data) => sendResponse({ ok: true, data })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+    }
+    if (msg && msg.type === 'WQP_POOL_SET') {
+        wqpPoolSet(msg.key, msg.value).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+    }
     if (msg && msg.type === 'WQP_INDEXED_DATA_GET') {
         handleIndexedDbDataRequest(msg).then((data) => {
             sendResponse({ ok: true, data });

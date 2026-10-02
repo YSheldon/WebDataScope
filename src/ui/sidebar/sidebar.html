@@ -64,13 +64,28 @@
                     </select>
                 </label>
                 <label class="field">
+                    <span>接入方式</span>
+                    <select id="llmProvider">
+                        <option value="custom">自定义接口（原有方式，不变）</option>
+                        <option value="cherry">Cherry Studio（本机 API）</option>
+                    </select>
+                </label>
+                <label class="field">
                     <span>Base URL</span>
                     <input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com 或 http://192.168.x.x:8000/v1">
                 </label>
-                <label class="field">
+                <label class="field" id="llmModelField">
                     <span>Model</span>
                     <input id="llmModel" type="text" placeholder="输入模型名称">
                 </label>
+                <label class="field" id="llmModelSelectField" hidden>
+                    <span>Model（从接口读取，不手写）</span>
+                    <select id="llmModelSelect"></select>
+                </label>
+                <div class="action-row" id="llmCherryRow" hidden>
+                    <button id="llmFetchModelsBtn" type="button">读取模型列表</button>
+                    <span id="llmModelHint" aria-live="polite"></span>
+                </div>
                 <label class="field">
                     <span>API Key</span>
                     <input id="llmApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存 Key">

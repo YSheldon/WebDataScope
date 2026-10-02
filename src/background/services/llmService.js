@@ -2,9 +2,18 @@ import { getLocalValue, setLocalValue } from './storageService.js';
 
 const CONFIG_KEY = 'WQP_LLM_Config';
 
+// Cherry Studio 内置 API Server 是 OpenAI 兼容的, 默认端口 3000, 路径挂在 /api 下
+const CHERRY_BASE_URLS = [
+    'http://127.0.0.1:3000/api/v1',
+    'http://localhost:3000/api/v1',
+];
+const PROVIDER_CUSTOM = 'custom';
+const PROVIDER_CHERRY = 'cherry';
+
 const DEFAULT_CONFIG = {
     enabled: false,
     defaultCollapsed: false,
+    provider: PROVIDER_CUSTOM,
     baseUrl: '',
     model: '',
     apiKey: '',
@@ -14,10 +23,15 @@ function normalizeBaseUrl(value) {
     return String(value || '').trim().replace(/\/+$/, '');
 }
 
+function normalizeProvider(value) {
+    return value === PROVIDER_CHERRY ? PROVIDER_CHERRY : PROVIDER_CUSTOM;
+}
+
 function normalizeConfig(config = {}) {
     return {
         enabled: config.enabled === true,
         defaultCollapsed: config.defaultCollapsed === true,
+        provider: normalizeProvider(config.provider),
         baseUrl: normalizeBaseUrl(config.baseUrl),
         model: String(config.model || '').trim(),
         apiKey: String(config.apiKey || '').trim(),
@@ -61,6 +75,7 @@ export async function saveLlmConfig(input = {}) {
         defaultCollapsed: typeof input.defaultCollapsed === 'boolean'
             ? input.defaultCollapsed
             : existing.defaultCollapsed,
+        provider: input.provider,
         baseUrl: input.baseUrl,
         model: input.model,
         apiKey: typeof input.apiKey === 'string' && input.apiKey.length > 0
@@ -109,6 +124,60 @@ export async function testLlmConnection(input = {}) {
     await setLocalValue(CONFIG_KEY, next);
     return { ok: true, model: config.model, enabled: true };
 }
+
+async function requestModelList(baseUrl, apiKey, timeoutMs = 6000) {
+    const url = `${normalizeBaseUrl(baseUrl)}/models`;
+    const headers = { Accept: 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const response = await fetch(url, { headers, ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const detail = data?.error?.message || data?.message || response.statusText;
+        throw new Error(`HTTP ${response.status}: ${detail}`);
+    }
+    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+    const models = list
+        .map((m) => (typeof m === 'string' ? m : m?.id || m?.name))
+        .filter((id) => typeof id === 'string' && id.trim())
+        .map((id) => id.trim());
+    return Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
+}
+
+// 从指定接口拉模型列表(下拉框用), 模型 id 一律来自接口返回, 不手写
+export async function listLlmModels(input = {}) {
+    const existing = await getLlmConfigRaw();
+    const baseUrl = normalizeBaseUrl(input.baseUrl) || existing.baseUrl;
+    const apiKey = (typeof input.apiKey === 'string' && input.apiKey && input.apiKey !== '********')
+        ? input.apiKey
+        : existing.apiKey;
+    if (!baseUrl) throw new Error('请先填写 Base URL。');
+    const models = await requestModelList(baseUrl, apiKey);
+    return { baseUrl, models };
+}
+
+// 探测本机 Cherry Studio API Server 并取模型列表
+export async function discoverCherryModels(input = {}) {
+    const existing = await getLlmConfigRaw();
+    const apiKey = (typeof input.apiKey === 'string' && input.apiKey && input.apiKey !== '********')
+        ? input.apiKey
+        : existing.apiKey;
+    const preferred = normalizeBaseUrl(input.baseUrl);
+    const candidates = preferred && !CHERRY_BASE_URLS.includes(preferred)
+        ? [preferred, ...CHERRY_BASE_URLS]
+        : [...CHERRY_BASE_URLS];
+    const tried = [];
+    for (const baseUrl of candidates) {
+        try {
+            const models = await requestModelList(baseUrl, apiKey);
+            return { baseUrl, models };
+        } catch (error) {
+            tried.push(`${baseUrl}（${error.message}）`);
+        }
+    }
+    throw new Error(`未找到本机 Cherry Studio API Server。请在 Cherry Studio「设置 → API 服务」里启动服务。已尝试：${tried.join('；')}`);
+}
+
+export { CHERRY_BASE_URLS, PROVIDER_CHERRY, PROVIDER_CUSTOM };
 
 export async function runLlmJson({ systemPrompt, userPrompt, schemaName = 'result' }) {
     const config = await getLlmConfigRaw();

@@ -6,7 +6,14 @@ import {
     markCommunityPostRead,
     setCommunityPostFavorite,
 } from './communityPostMarkerService.js';
-import { getLlmConfig, saveLlmConfig, testLlmConnection } from './llmService.js';
+import {
+    CHERRY_BASE_URLS,
+    discoverCherryModels,
+    getLlmConfig,
+    listLlmModels,
+    saveLlmConfig,
+    testLlmConnection,
+} from './llmService.js';
 import {
     clearProdMemoCache,
     clearProdMemoSyncData,
@@ -99,6 +106,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === 'WQP_LLM_CONFIG_TEST') {
         return respond(sendResponse, testLlmConnection(msg.config || {}));
+    }
+    if (msg.type === 'WQP_LLM_MODELS') {
+        return respond(sendResponse, msg.provider === 'cherry'
+            ? discoverCherryModels(msg.config || {})
+            : listLlmModels(msg.config || {}));
+    }
+    if (msg.type === 'WQP_LLM_CHERRY_BASE_URLS') {
+        return respond(sendResponse, { baseUrls: CHERRY_BASE_URLS });
     }
     if (msg.type === 'WQP_ALPHA_AI_GENERATE_DESCRIPTION') {
         return respond(sendResponse, generateAlphaDescriptionWithAi({

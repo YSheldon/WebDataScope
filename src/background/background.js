@@ -428,13 +428,12 @@ function injectFetchInterceptor(tabId) {
                 if (cached && Date.now() - cached.at < 120000) return cached.rows;
                 const rows = [];
                 const seenIds = new Set();
-                let cursor = null;              // dateCreated>= 游标: 绕过 API 的深分页 offset 上限
-                let total = Infinity;
+                let cursor = null;              // dateCreated<= 游标(最新优先): 绕过 API 的深分页 offset 上限
                 const joiner = serverUrl.includes('?') ? '&' : '?';
                 let failedPages = 0;
                 for (let guard = 0; guard < 300; guard += 1) {
-                    let pageUrl = `${serverUrl}${joiner}limit=100&order=dateCreated`;
-                    if (cursor) pageUrl += `&dateCreated>=${encodeURIComponent(cursor)}`;
+                    let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
+                    if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;
                     let res;
                     try {
                         res = await fetchAlphasPage(pageUrl);
@@ -447,9 +446,8 @@ function injectFetchInterceptor(tabId) {
                     }
                     failedPages = 0;
                     const page = res.page || [];
-                    if (res.total) total = res.total;
                     if (!page.length) break;
-                    let newest = cursor;
+                    let oldest = null;
                     let fresh = 0;
                     for (const row of page) {
                         if (row.id && seenIds.has(row.id)) continue;
@@ -457,12 +455,12 @@ function injectFetchInterceptor(tabId) {
                         rows.push(row);
                         fresh += 1;
                         const ts = row.dateCreated;
-                        if (ts && (!newest || ts > newest)) newest = ts;
+                        if (ts && (!oldest || ts < oldest)) oldest = ts;
                     }
-                    console.log(`[WQP] 虚拟列全库拉取 ${rows.length}${total ? '/' + total : ''}`);
+                    console.log(`[WQP] 虚拟列全库拉取(最新优先) 已取 ${rows.length} 行`);
                     if (!fresh) break;              // 游标无进展(整页同一时间戳), 防死循环
                     if (page.length < 100) break;   // 不足一页 = 到底
-                    cursor = newest;
+                    cursor = oldest;
                 }
                 clientAlphaCache.set(serverUrl, { at: Date.now(), rows });
                 return rows;

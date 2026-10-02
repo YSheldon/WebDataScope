@@ -459,7 +459,20 @@ function injectFetchInterceptor(tabId) {
                 throw new Error(lastErr || 'fetch failed');
             }
 
+            // 本地库按「稳定基底」共用一份: 去掉 type 和 dateCreated(这些在本地过滤),
+            // 这样 REGULAR / RA / 不同日期窗口的查询都命中同一份库, 不会各自全量重拉
+            function wqpPoolUrl(serverUrl) {
+                const u = new URL(serverUrl);
+                const keep = [];
+                for (const [k, v] of u.searchParams) {
+                    if (k === 'type' || k.replace(/>|</g, '').startsWith('dateCreated')) continue;
+                    keep.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+                }
+                return `${u.origin}${u.pathname}${keep.length ? `?${keep.join('&')}` : ''}`;
+            }
+
             async function loadAlphasForClientQuery(serverUrl) {
+                serverUrl = wqpPoolUrl(serverUrl);
                 // 缓存键归一化: 去掉 order/limit/offset, 同一筛选集共用一份本地库
                 const cacheKey = serverUrl.replace(/([?&])(order|limit|offset)=[^&]*/g, '$1').replace(/[?&]+$/, '');
                 const mem = clientAlphaCache.get(cacheKey);
@@ -623,6 +636,33 @@ function injectFetchInterceptor(tabId) {
                 const serverUrl = `${url.origin}${url.pathname}${serverParts.length ? `?${serverParts.join('&')}` : ''}`;
                 return { limit, offset, clientOrder, clientFilters, serverUrl, active: Boolean(clientOrder || clientFilters.length) };
             }
+            // type 和 dateCreated 是服务端参数, 但本地库按稳定基底共用一份, 所以在本地补做这两项过滤
+            function wqpConstrain(rows, rawUrl) {
+                let types = null;
+                let min = null;
+                let max = null;
+                let minInc = true;
+                let maxInc = false;
+                const q = String(rawUrl).split('?')[1] || '';
+                for (const part of q.split('&')) {
+                    let d;
+                    try { d = decodeURIComponent(part.replace(/\+/g, ' ')); } catch (_) { continue; }
+                    if (d.startsWith('type=')) { types = d.slice(5).split('\u001f').filter(Boolean); continue; }
+                    const m = d.match(/^dateCreated(>=|<=|>|<)(.+)$/);
+                    if (!m) continue;
+                    if (m[1] === '>=' || m[1] === '>') { min = m[2]; minInc = m[1] === '>='; }
+                    else { max = m[2]; maxInc = m[1] === '<='; }
+                }
+                if (!types && !min && !max) return rows;
+                return rows.filter((r) => {
+                    if (types && !types.includes(r.type)) return false;
+                    const ts = r.dateCreated || '';
+                    if (min && (minInc ? ts < min : ts <= min)) return false;
+                    if (max && (maxInc ? ts > max : ts >= max)) return false;
+                    return true;
+                });
+            }
+
             function wqpApply(rows, parsed) {
                 let out = Array.isArray(rows) ? rows.slice() : [];
                 const CORR_FIELDS = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'];
@@ -685,7 +725,7 @@ function injectFetchInterceptor(tabId) {
                 console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
                 if (clientQuery?.active) {
                     try {
-                        const rows = await loadAlphasForClientQuery(clientQuery.serverUrl);
+                        const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
                         const filtered = wqpApply(rows, clientQuery);
                         const page = wqpPage(filtered, clientQuery);
                         const start = Math.max(0, clientQuery.offset || 0);

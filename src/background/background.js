@@ -919,11 +919,15 @@ function wqpPoolOpen() {
 }
 async function wqpPoolGet(key) {
     const db = await wqpPoolOpen();
-    return new Promise((resolve) => {
-        const req = db.transaction('pools', 'readonly').objectStore('pools').get(key);
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => resolve(null);
+    const all = await new Promise((resolve) => {
+        const out = [];
+        const req = db.transaction('pools', 'readonly').objectStore('pools').openCursor();
+        req.onsuccess = () => { const c = req.result; if (c) { out.push([c.key, c.value]); c.continue(); } else resolve(out); };
+        req.onerror = () => resolve(out);
     });
+    console.log(`[WQP][bg] 库内键: ${all.map(([k, v]) => `${k} => ${v?.rows?.length || 0}行`).join(' | ') || '(空)'}`);
+    const hit = all.find(([k]) => k === key);
+    return hit ? hit[1] : null;
 }
 async function wqpPoolSet(key, value) {
     const db = await wqpPoolOpen();

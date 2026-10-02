@@ -480,11 +480,28 @@ function injectFetchInterceptor(tabId) {
             const WQP_SERVER_REWRITES = { operatorCount: 'regular.operatorCount' };
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
 
+            // Prod/Pool/Self Corr 的值不在列表 API 里, 来自插件查过的本地记录(localStorage)
+            let wqpMemoCache = null;
+            function wqpMemo() {
+                if (wqpMemoCache) return wqpMemoCache;
+                try { wqpMemoCache = JSON.parse(localStorage.getItem('WQP_ProdMemoCache') || '{}') || {}; }
+                catch (_) { wqpMemoCache = {}; }
+                return wqpMemoCache;
+            }
+            function wqpMemoNumeric(alphaId, kind) {
+                const metric = wqpMemo()[alphaId]?.[kind];
+                const numeric = Number(metric?.max);
+                return Number.isFinite(numeric) ? numeric : NaN; // 没查过 = NaN, 数值比较不命中
+            }
+
             function wqpValueOf(row, field) {
                 const canonical = WQP_FIELD_CANONICAL[field] || field;
                 if (canonical === 'is.failedNumRA') return Number(row.is?.failedNumRA ?? 0);
                 if (canonical === 'is.failedNumPPA') return Number(row.is?.failedNumPPA ?? 0);
                 if (canonical === 'is.WQPPYS') return String(row.is?.WQPPYS ?? '');
+                if (canonical === 'maxProdCorr') return wqpMemoNumeric(row.id, 'prod');
+                if (canonical === 'maxPoolProdCorr') return wqpMemoNumeric(row.id, 'pool');
+                if (canonical === 'maxSelfCorr') return wqpMemoNumeric(row.id, 'self');
                 return row[canonical];
             }
             function wqpNumericOf(value) {

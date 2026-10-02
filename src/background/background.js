@@ -417,6 +417,53 @@ function injectFetchInterceptor(tabId) {
                 });
             }
 
+            // 一次性迁移: 1.10.25 把库存在页面源 IndexedDB, 1.10.26 起改存扩展源。
+            // 这里把旧库分批拷进扩展源, 这样升级后不用重新全量下载。
+            let wqpMigrateStarted = false;
+            async function wqpMigratePoolOnce() {
+                if (wqpMigrateStarted) return;
+                wqpMigrateStarted = true;
+                const FLAG = 'WQP_PoolMigrated_v26';
+                try {
+                    if (localStorage.getItem(FLAG) === '1') return;
+                    const dbs = (await indexedDB.databases?.()) || [];
+                    if (!dbs.some((d) => d.name === 'WQP_AlphaPool')) { localStorage.setItem(FLAG, '1'); return; }
+                    const db = await new Promise((resolve, reject) => {
+                        const req = indexedDB.open('WQP_AlphaPool');
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => reject(req.error);
+                    });
+                    if (!db.objectStoreNames.contains('pools')) { db.close(); localStorage.setItem(FLAG, '1'); return; }
+                    const entries = await new Promise((resolve) => {
+                        const out = [];
+                        const req = db.transaction('pools', 'readonly').objectStore('pools').openCursor();
+                        req.onsuccess = () => {
+                            const c = req.result;
+                            if (c) { out.push([c.key, c.value]); c.continue(); } else resolve(out);
+                        };
+                        req.onerror = () => resolve(out);
+                    });
+                    db.close();
+                    const BATCH = 2000;
+                    for (const [key, rec] of entries) {
+                        const rows = rec?.rows || [];
+                        if (!rows.length) continue;
+                        for (let off = 0; off < rows.length; off += BATCH) {
+                            const batch = rows.slice(off, off + BATCH);
+                            await new Promise((resolve) => {
+                                try {
+                                    chrome.runtime.sendMessage({ type: 'WQP_POOL_IMPORT', key, rows: batch, newest: rec.newest || '' }, () => resolve());
+                                } catch (_) { resolve(); }
+                            });
+                        }
+                        console.log(`[WQP] 已迁移本地库: ${rows.length} 行`);
+                    }
+                    localStorage.setItem(FLAG, '1');
+                } catch (e) {
+                    console.warn('[WQP] 本地库迁移失败(将重新全量拉取)', e);
+                }
+            }
+
             async function fetchAlphasPage(pageUrl) {
                 const backoffs = [0, 800, 2000];
                 let lastErr = '';
@@ -456,6 +503,7 @@ function injectFetchInterceptor(tabId) {
                 if (mem && Date.now() - mem.at < 60000) return mem.rows; // 1 分钟内的重复请求(应用重试)直接用内存
                 if (clientAlphaInflight.has(cacheKey)) return clientAlphaInflight.get(cacheKey); // 同一个拉取不并发重入
                 const task = (async () => {
+                    await wqpMigratePoolOnce(); // 先把 1.10.25 的旧库迁进扩展源, 避免升级后重下
                     const stored = await wqpPoolGet(cacheKey); // { rows, newest } 或 null
                     const have = new Set((stored?.rows || []).map((r) => r.id));
                     const watermark = stored?.newest || '';
@@ -884,6 +932,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg && msg.type === 'WQP_POOL_SET') {
         wqpPoolSet(msg.key, msg.value).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+    }
+    if (msg && msg.type === 'WQP_POOL_IMPORT') {
+        // 迁移: 把 1.10.25 存在页面源 IndexedDB 的库分批并入扩展源库(按 id 去重)
+        (async () => {
+            const cur = (await wqpPoolGet(msg.key)) || { rows: [], newest: '' };
+            const have = new Set(cur.rows.map((r) => r.id));
+            for (const row of msg.rows || []) {
+                if (row?.id && have.has(row.id)) continue;
+                if (row?.id) have.add(row.id);
+                cur.rows.push(row);
+            }
+            if (msg.newest && msg.newest > (cur.newest || '')) cur.newest = msg.newest;
+            await wqpPoolSet(msg.key, cur);
+            sendResponse({ ok: true, count: cur.rows.length });
+        })().catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true;
     }
     if (msg && msg.type === 'WQP_INDEXED_DATA_GET') {

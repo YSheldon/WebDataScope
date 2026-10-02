@@ -357,8 +357,8 @@ function injectFetchInterceptor(tabId) {
                     'LOW_INVESTABILITY_CONSTRAINED_SHARPE'
                 ]));
 
-                // Operator Count 按用户口径重算: 平台把表达式开头的负号算作一个算子,
-                // 且 ts_backfill / group_backfill 属于豁免壳不该计入(实测 595/595 平台数 = 算子数 + 前导负号)
+                // Operator Count 重算: 平台把表达式开头的负号算作一个算子(实测平台数 = 算子数 + 前导负号),
+                // 负号按用户口径计入; ts_backfill / group_backfill 是豁免壳, 不计入
                 const WQP_OPERATOR_NAMES = new Set(`add multiply sign subtract pasteurize log max abs divide min signed_power
                     inverse sqrt reverse power densify or and not is_nan less equal greater if_else not_equal less_equal
                     greater_equal ts_corr ts_zscore ts_returns ts_product ts_std_dev ts_backfill days_from_last_change
@@ -369,15 +369,19 @@ function injectFetchInterceptor(tabId) {
                     trade_when group_mean group_rank group_backfill group_scale group_count group_zscore group_std_dev
                     group_sum group_neutralize`.split(/\s+/).filter(Boolean));
                 const WQP_FREE_OPERATORS = new Set(['ts_backfill', 'group_backfill']);
-                function wqpExemptOperatorCount(code) {
+                function wqpOperatorTokens(code) {
                     const tokens = String(code || '').match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-                    return tokens.filter((t) => WQP_OPERATOR_NAMES.has(t) && !WQP_FREE_OPERATORS.has(t)).length;
+                    return tokens.filter((t) => WQP_OPERATOR_NAMES.has(t));
                 }
                 function wqpRewriteOperatorCount(regular) {
                     if (!regular?.code) return;
                     const platform = Number(regular.operatorCount);
                     regular.operatorCountPlatform = Number.isFinite(platform) ? platform : null;
-                    regular.operatorCount = wqpExemptOperatorCount(regular.code);
+                    const ops = wqpOperatorTokens(regular.code);
+                    const noShell = ops.filter((t) => !WQP_FREE_OPERATORS.has(t)).length;
+                    const sign = /^\s*-/.test(regular.code) ? 1 : 0; // 前导负号也算一个算子
+                    regular.operatorCount = noShell + sign;
+                    regular.operatorCountNoShell = noShell;
                 }
 
                 // 2. 核心逻辑：遍历数据，统计不合格数量并新增字段
@@ -647,6 +651,7 @@ function injectFetchInterceptor(tabId) {
                         type: row.type, region: row.settings?.region, universe: row.settings?.universe,
                         sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
                         operatorCount: row.regular?.operatorCount, operatorCountPlatform: row.regular?.operatorCountPlatform,
+                        operatorCountNoShell: row.regular?.operatorCountNoShell,
                         maxProdCorr: row.maxProdCorr, dateCreated: row.dateCreated,
                     },
                 };

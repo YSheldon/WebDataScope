@@ -427,31 +427,42 @@ function injectFetchInterceptor(tabId) {
                 const cached = clientAlphaCache.get(serverUrl);
                 if (cached && Date.now() - cached.at < 120000) return cached.rows;
                 const rows = [];
-                let offset = 0;
+                const seenIds = new Set();
+                let cursor = null;              // dateCreated>= 游标: 绕过 API 的深分页 offset 上限
                 let total = Infinity;
-                const pageSize = 100;
+                const joiner = serverUrl.includes('?') ? '&' : '?';
                 let failedPages = 0;
-                while (offset < total && offset < 20000) {
-                    const joiner = serverUrl.includes('?') ? '&' : '?';
-                    const pageUrl = `${serverUrl}${joiner}limit=${pageSize}&offset=${offset}`;
-                    let page = null;
+                for (let guard = 0; guard < 300; guard += 1) {
+                    let pageUrl = `${serverUrl}${joiner}limit=100&order=dateCreated`;
+                    if (cursor) pageUrl += `&dateCreated>=${encodeURIComponent(cursor)}`;
+                    let res;
                     try {
-                        const res = await fetchAlphasPage(pageUrl);
-                        page = res.page;
-                        if (res.total) total = res.total;
+                        res = await fetchAlphasPage(pageUrl);
                     } catch (err) {
                         failedPages += 1;
-                        console.warn(`[WQP] 页 offset=${offset} 拉取失败(${err.message}), 跳过 100 行后继续`);
-                        if (failedPages > Math.max(3, Math.floor((total || 10000) / pageSize / 10))) {
-                            throw new Error(`虚拟列全库拉取失败(失败页过多): ${err.message}`);
-                        }
-                        offset += pageSize;
+                        console.warn(`[WQP] 全库拉取页失败(${err.message}), 重试 ${failedPages}/3`);
+                        if (failedPages >= 3) throw new Error(`虚拟列全库拉取失败: ${err.message}`);
+                        await new Promise((r) => setTimeout(r, 2000));
                         continue;
                     }
-                    rows.push(...page);
-                    console.log(`[WQP] 虚拟列全库拉取 ${rows.length}/${total}`);
-                    if (!page.length || page.length < pageSize) break;
-                    offset += page.length;
+                    failedPages = 0;
+                    const page = res.page || [];
+                    if (res.total) total = res.total;
+                    if (!page.length) break;
+                    let newest = cursor;
+                    let fresh = 0;
+                    for (const row of page) {
+                        if (row.id && seenIds.has(row.id)) continue;
+                        if (row.id) seenIds.add(row.id);
+                        rows.push(row);
+                        fresh += 1;
+                        const ts = row.dateCreated;
+                        if (ts && (!newest || ts > newest)) newest = ts;
+                    }
+                    console.log(`[WQP] 虚拟列全库拉取 ${rows.length}${total ? '/' + total : ''}`);
+                    if (!fresh) break;              // 游标无进展(整页同一时间戳), 防死循环
+                    if (page.length < 100) break;   // 不足一页 = 到底
+                    cursor = newest;
                 }
                 clientAlphaCache.set(serverUrl, { at: Date.now(), rows });
                 return rows;

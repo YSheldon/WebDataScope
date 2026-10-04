@@ -692,6 +692,23 @@ function injectFetchInterceptor(tabId) {
             function wqpPath(row, path) {
                 return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), row);
             }
+            // RA Parent 行自身没有 is.sharpe(只有 is.checks), 平台口径是看它的 Regional Child Alphas:
+            // 至少 MIN_RA_CHILD_SHARPE_MATCH 个子代同时满足同一组 sharpe 条件, 这支 Parent 才算命中。
+            const MIN_RA_CHILD_SHARPE_MATCH = 2;
+            function wqpRaParentChildSharpePass(row, rowsById, sharpeFilters) {
+                const childIds = Array.isArray(row?.children) ? row.children : [];
+                if (!childIds.length) return false;
+                let matched = 0;
+                for (const childId of childIds) {
+                    const child = rowsById.get(childId);
+                    if (!child) continue; // 子代不在本地库里, 只能按没命中算
+                    const sharpe = wqpPath(child, 'is.sharpe');
+                    if (typeof sharpe !== 'number' || !Number.isFinite(sharpe)) continue;
+                    if (sharpeFilters.every((f) => wqpCompare(f.op, sharpe, f.value))) matched += 1;
+                }
+                console.log(`[WQP] RA Parent ${row.id}: ${matched}/${childIds.length} 个子代满足 sharpe 条件(门槛 ${MIN_RA_CHILD_SHARPE_MATCH})`);
+                return matched >= MIN_RA_CHILD_SHARPE_MATCH;
+            }
             function wqpConstrain(rows, rawUrl) {
                 let types = null;
                 let hidden = null;
@@ -724,6 +741,9 @@ function injectFetchInterceptor(tabId) {
                     if (!usable.includes(f)) console.log(`[WQP] 本地补过滤跳过 ${f.field}${f.op}${f.value}: 行内无有效标量值`);
                 }
                 if (!types && hidden === null && !min && !max && !usable.length) return rows;
+                // is.sharpe 遇到 RA Parent 行走子代口径, 需要 id -> 行 的索引先备好
+                const sharpeFilters = usable.filter((f) => f.field === 'is.sharpe');
+                const rowsById = sharpeFilters.length ? new Map(rows.map((r) => [r.id, r])) : null;
                 return rows.filter((r) => {
                     if (types && !types.includes(r.type)) return false;
                     if (hidden !== null && Boolean(r.hidden) !== hidden) return false;
@@ -731,6 +751,11 @@ function injectFetchInterceptor(tabId) {
                     if (min && (minInc ? ts < min : ts <= min)) return false;
                     if (max && (maxInc ? ts > max : ts >= max)) return false;
                     for (const f of usable) {
+                        // RA Parent 自己没有 sharpe, 换成"≥2 个子代同时满足"来判
+                        if (f.field === 'is.sharpe' && r.type === 'RA_PARENT') {
+                            if (!wqpRaParentChildSharpePass(r, rowsById, sharpeFilters)) return false;
+                            continue;
+                        }
                         const actual = wqpPath(r, f.field);
                         if (f.op === '=') {
                             if (!f.value.split('\u001f').includes(String(actual))) return false;

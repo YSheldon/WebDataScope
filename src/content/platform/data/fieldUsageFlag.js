@@ -1,5 +1,11 @@
 // fieldUsageFlag.js: 数据字段列表/详情页直接显示字段本季使用状态,不再需要双击查询
-console.log('[WQP] fieldUsageFlag v1.10.36 loaded');
+// 这行是「扩展到底重载没重载」的唯一现场证据, 所以版本号直接读 manifest, 不写死 ——
+// 写死过(v1.10.36 一直挂着), 排查时根本看不出用户装的是哪一版。
+// 本脚本跑在 ISOLATED world, 有 chrome.runtime; MAIN world 里没有, 别照抄。
+const WQP_VERSION = (() => {
+    try { return chrome.runtime.getManifest().version; } catch (_) { return 'unknown'; }
+})();
+console.log(`[WQP] fieldUsageFlag v${WQP_VERSION} loaded`);
 
 const FIELD_USAGE_STATE = {
     alphasPromise: null,

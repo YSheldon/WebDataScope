@@ -5,8 +5,11 @@
     // 这与油猴的效果完全等价。
 
     const SEARCH = 'SUBMITTED?[s]:[r],...c?[o]:[],{';
-    const VERSION_REGEX = /version:\s*"1\.0\.6"/;
-    const VERSION_REPLACE = 'version:"1.0.6-wqp14"';
+    // 平台的列注册表会缓存在 localStorage, 缓存键里带 bundle 版本号, 所以想让新列生效必须改版本串。
+    // 这里刻意不写死 1.0.6: 平台哪天把 bundle 版本 bump 上去, 写死的正则就会静默失配(原代码没有 else,
+    // 失配后什么都不打印), 结果是老列照常显示、新列永远不出现。改成匹配任意 1.x 版本, 保留原版本号只加后缀。
+    const VERSION_REGEX = /version:\s*"(1\.\d+\.\d+)"/;
+    const VERSION_SUFFIX = '-wqp15';
 
     const EXTRA_COLUMNS = [
         {
@@ -133,9 +136,13 @@
             } else {
                 console.warn('[WQP] patchColumns: 未找到列特征串，直接执行原始代码', src);
             }
-            if (patched && VERSION_REGEX.test(code)) {
-                code = code.replace(VERSION_REGEX, VERSION_REPLACE);
-                console.log('[WQP] patchColumns: 成功升级 version，强制刷新 localStorage 缓存', src);
+            const vm = patched ? code.match(VERSION_REGEX) : null;
+            if (vm) {
+                code = code.replace(VERSION_REGEX, `version:"${vm[1]}${VERSION_SUFFIX}"`);
+                console.log(`[WQP] patchColumns: version ${vm[1]} → ${vm[1]}${VERSION_SUFFIX}，强制刷新 localStorage 列缓存`, src);
+            } else if (patched) {
+                // 原来这里是裸 if, 失配就悄无声息地什么都不做, 排查时看不出列为什么不生效
+                console.error('[WQP] patchColumns: 列定义已注入, 但没匹配到 version 串 → localStorage 列缓存不会失效, 新增的列可能不显示', src);
             }
             const s = document.createElement('script');
             s.textContent = code;

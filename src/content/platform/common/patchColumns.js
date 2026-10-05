@@ -6,7 +6,7 @@
 
     const SEARCH = 'SUBMITTED?[s]:[r],...c?[o]:[],{';
     const VERSION_REGEX = /version:\s*"1\.0\.6"/;
-    const VERSION_REPLACE = 'version:"1.0.6-wqp13"';
+    const VERSION_REPLACE = 'version:"1.0.6-wqp14"';
 
     const EXTRA_COLUMNS = [
         {
@@ -106,7 +106,7 @@
             id: 'newFieldCount',
             parent: 'is',
             name: '新字段数',
-            active: false,
+            active: true,
             category: 'WQP',
             activeTabsWithoutParent: ['unsubmitted', 'submitted'],
             display: true,

@@ -301,6 +301,26 @@ export async function initSettingsPanel() {
         }
     });
 
+    // 虚拟列本地库(存在 BRAIN 页面源 IndexedDB): 平时只自动刷新最近几页, 想把整池刷干净就点这个。
+    // 重建后会全量重拉, 可能要几分钟, 所以按钮期间禁用。
+    const rebuildPoolBtn = document.getElementById('rebuildPoolBtn');
+    rebuildPoolBtn?.addEventListener('click', async () => {
+        if (!confirm('确定要重建 alpha 本地库吗？\n\n本地库是虚拟列(筛选/排序)的数据来源。重建后会丢弃全部缓存并全量重新拉取，耗时可能几分钟。\n「新字段数」用的字段表缓存会保留，不受影响。')) return;
+        rebuildPoolBtn.disabled = true;
+        setStatus('正在重建本地库，请在 BRAIN 页面保持标签页打开…');
+        try {
+            const result = await sendMessage('WQP_POOL_REBUILD');
+            setStatus(
+                `本地库已清空 ${result?.dropped || 0} 个缓存键。下次使用虚拟列时会自动全量重拉，稍等片刻即可。`,
+                'success'
+            );
+        } catch (error) {
+            setStatus(`重建失败：${error.message}`, 'error');
+        } finally {
+            rebuildPoolBtn.disabled = false;
+        }
+    });
+
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
         saveBtn.disabled = true;

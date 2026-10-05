@@ -701,9 +701,22 @@ function injectFetchInterceptor(tabId) {
             // 页面同时发的 REGULAR、RA、不同日期窗口查询都命中同一份库, 全量只拉一次
             function wqpPoolUrl(serverUrl) {
                 const u = new URL(serverUrl);
-                const status = u.searchParams.get('status') || 'UNSUBMITTED';
-                return `${u.origin}${u.pathname}?status=${encodeURIComponent(status)}`;
+                // 平台的「已提交」页发的是 status!=UNSUBMITTED␟IS-FAIL, 参数名带感叹号, searchParams.get('status') 取不到,
+                // 以前会回退成 UNSUBMITTED, 于是已提交页和未提交页算成同一个键, 虚拟列在已提交页筛出来的其实是未提交的 alpha。
+                // 两种写法各自还原成不同的键, 让两个池彻底分开。
+                const eq = u.searchParams.get('status');
+                if (eq != null) return `${u.origin}${u.pathname}?status=${encodeURIComponent(eq)}`;
+                const ne = u.searchParams.get('status!');
+                if (ne != null) return `${u.origin}${u.pathname}?status!=${encodeURIComponent(ne)}`;
+                return `${u.origin}${u.pathname}?status=UNSUBMITTED`;
             }
+
+            // 每次加载都重拉最近这么多页并覆盖已有行, 让刚改的颜色/刚翻的检查状态(PENDING→FAIL)及时生效。
+            // 库里更早的行不会被自动刷新, 要彻底刷新用侧边栏的「重建本地库」。
+            const WQP_REFRESH_PAGES = 3;
+            const WQP_PAGE_SIZE = 100;
+            // 池键是整条 URL(https://api.worldquantbrain.com/users/self/alphas?...), 结尾才是 /alphas
+            const WQP_POOL_SUFFIX = '/alphas';
 
             async function loadAlphasForClientQuery(serverUrl) {
                 serverUrl = wqpPoolUrl(serverUrl);
@@ -715,15 +728,18 @@ function injectFetchInterceptor(tabId) {
                 const task = (async () => {
                     const stored = await wqpPoolGet(cacheKey); // { rows, newest } 或 null
                     console.log(`[WQP] 本地库读取 key=${cacheKey} 已有 ${stored?.rows?.length || 0} 行`);
-                    const have = new Set((stored?.rows || []).map((r) => r.id));
+                    // 覆盖而不是丢弃: 服务端这份若更新(颜色/检查状态/标签都可能在服务端改), 用新的换掉库里旧的。
+                    // 按 id 建索引, 覆盖时保持原有行序, 免得翻页顺序在两次加载之间跳动。
+                    const byId = new Map((stored?.rows || []).map((r, i) => [r.id, { row: r, order: i }]));
                     const watermark = stored?.newest || '';
-                    const fresh = [];
+                    const added = [];
                     const seenIds = new Set();
+                    let refreshed = 0;
                     let cursor = null;
                     const joiner = serverUrl.includes('?') ? '&' : '?';
                     let failedPages = 0;
-                    for (let guard = 0; guard < 500; guard += 1) {
-                        let pageUrl = `${serverUrl}${joiner}limit=100&order=-dateCreated`;
+                    for (let guard = 0, pageNo = 0; guard < 500; guard += 1, pageNo += 1) {
+                        let pageUrl = `${serverUrl}${joiner}limit=${WQP_PAGE_SIZE}&order=-dateCreated`;
                         if (cursor) pageUrl += `&dateCreated<=${encodeURIComponent(cursor)}`;
                         let res;
                         try {
@@ -741,32 +757,86 @@ function injectFetchInterceptor(tabId) {
                         let oldest = null;
                         let newOnPage = 0;
                         for (const row of page) {
-                            if (row.id && seenIds.has(row.id)) continue;
+                            if (row.id && seenIds.has(row.id)) continue; // 同一页里重复出现的 id
                             if (row.id) seenIds.add(row.id);
                             const ts = row.dateCreated;
                             if (ts && (!oldest || ts < oldest)) oldest = ts;
-                            if (row.id && have.has(row.id)) continue; // 本地已有
-                            fresh.push(row);
+                            const prev = row.id ? byId.get(row.id) : null;
+                            if (prev) { byId.set(row.id, { row, order: prev.order }); refreshed += 1; continue; }
+                            added.push(row);
+                            byId.set(row.id, { row, order: -1 }); // 新行统一排到前面
                             newOnPage += 1;
                         }
-                        console.log(`[WQP] 虚拟列拉取${watermark ? '(增量)' : '(全量)'} 新增 ${fresh.length} 行`);
-                        if (page.length < 100) break; // 不足一页 = 到底
-                        // 增量模式: 翻到已存储的水位以下且本页无新增, 说明追平了
-                        if (watermark && oldest && oldest <= watermark && newOnPage === 0) break;
+                        console.log(`[WQP] 虚拟列拉取第 ${pageNo + 1} 页: 新增 ${added.length} 累计, 刷新 ${refreshed} 支`);
+                        if (page.length < WQP_PAGE_SIZE) break; // 不足一页 = 到底
+                        // 最近几页无条件翻完(覆盖式刷新), 之后才允许用追平条件提前收工
+                        if (pageNo + 1 >= WQP_REFRESH_PAGES && watermark && oldest && oldest <= watermark && newOnPage === 0) break;
                         if (!oldest || oldest === cursor) break; // 游标无进展, 防死循环
                         cursor = oldest;
                     }
-                    const rows = fresh.concat(stored?.rows || []);
+                    const merged = [...byId.values()].sort((a, b) => a.order - b.order).map((e) => e.row);
                     let newest = watermark;
-                    for (const row of fresh) if (row.dateCreated && row.dateCreated > newest) newest = row.dateCreated;
-                    await wqpPoolSet(cacheKey, { rows, newest });
-                    clientAlphaCache.set(cacheKey, { at: Date.now(), rows });
-                    console.log(`[WQP] 本地库已更新: 共 ${rows.length} 行(本次新增 ${fresh.length})`);
-                    return rows;
+                    for (const row of added) if (row.dateCreated && row.dateCreated > newest) newest = row.dateCreated;
+                    await wqpPoolSet(cacheKey, { rows: merged, newest });
+                    clientAlphaCache.set(cacheKey, { at: Date.now(), rows: merged });
+                    console.log(`[WQP] 本地库已更新: 共 ${merged.length} 行(本次新增 ${added.length}, 刷新 ${refreshed})`);
+                    return merged;
                 })();
                 clientAlphaInflight.set(cacheKey, task);
                 try { return await task; } finally { clientAlphaInflight.delete(cacheKey); }
             }
+
+            // 手动「重建本地库」: 丢光 alphas 池的行, 让下次查询走全量。
+            // 同一个 object store 里还住着 wqpNewFields(新字段数用的字段表缓存), 那个绝对不能碰 ——
+            // 删了会触发每个 region 重翻 10000 个字段表(6 分钟 × region 数), 所以按前缀挑键而不是清空 store。
+            async function wqpRebuildAlphasPool() {
+                let dropped = 0;
+                let keptNewFields = false;
+                try {
+                    const db = await wqpPoolDb();
+                    const keys = await new Promise((resolve) => {
+                        const out = [];
+                        const req = db.transaction('pools', 'readonly').objectStore('pools').openCursor();
+                        req.onsuccess = () => {
+                            const c = req.result;
+                            if (c) { out.push(c.key); c.continue(); } else resolve(out);
+                        };
+                        req.onerror = () => resolve(out);
+                    });
+                    for (const key of keys) {
+                        if (typeof key === 'string' && key.includes(WQP_POOL_SUFFIX)) {
+                            await new Promise((resolve) => {
+                                const tx = db.transaction('pools', 'readwrite');
+                                tx.objectStore('pools').delete(key);
+                                tx.oncomplete = resolve;
+                                tx.onerror = resolve;
+                                tx.onabort = resolve;
+                            });
+                            dropped += 1;
+                        } else if (key === WQP_NF_KEY) keptNewFields = true;
+                    }
+                    db.close();
+                } catch (e) {
+                    console.warn('[WQP] 重建本地库失败', e);
+                    return { dropped, keptNewFields, ok: false, error: String(e && e.message || e) };
+                }
+                clientAlphaCache.clear();
+                clientAlphaInflight.clear();
+                wqpNfState.detail.clear();
+                console.log(`[WQP] 本地库已清空 ${dropped} 个键(新字段数字段表缓存${keptNewFields ? '已保留' : '本来就没有'}), 下次使用会全量重拉`);
+                return { dropped, keptNewFields, ok: true };
+            }
+
+            // 侧边栏点「重建本地库」走这条路: ISOLATED 内容脚本 postMessage 进来, 这里清完再回一条结果。
+            // MAIN world 拿不到 chrome.*, 所以只能靠 window.postMessage 当中转。
+            window.addEventListener('message', (event) => {
+                if (event.source !== window) return;
+                const msg = event.data;
+                if (!msg || msg.type !== 'WQP_POOL_REBUILD') return;
+                wqpRebuildAlphasPool().then((result) => {
+                    window.postMessage({ type: 'WQP_POOL_REBUILD_DONE', reqId: msg.reqId, result }, '*');
+                });
+            });
 
             function requestMethod(resource, config) {
                 const method = config?.method || (resource instanceof Request ? resource.method : 'GET');
@@ -984,13 +1054,45 @@ function injectFetchInterceptor(tabId) {
                     // 新字段数被筛时, 把命中的字段 id 列出来, 方便核对某支为什么被留下
                     newFields: (parsed.clientFilters || []).some((f) => (WQP_FIELD_CANONICAL[f.field] || f.field) === 'is.newFieldCount')
                         ? (wqpNfState.detail.get(alphaId) || []) : undefined,
+                    // 库里这份 vs 接口当前这份: 颜色/检查状态对不上就说明本地库还没刷新到
+                    poolFreshness: await wqpDebugFreshness(alphaId, row, parsed),
                     values: {
                         type: row.type, stage: row.stage, region: row.settings?.region, universe: row.settings?.universe,
                         sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
                         newFieldCount: row.is?.newFieldCount,
+                        color: row.color, name: row.name, stage_raw: row.stage,
                         operatorCount: row.regular?.operatorCount, maxProdCorr: row.maxProdCorr,
                         pyramids: row.pyramids, themes: row.themes, tags: row.tags, dateCreated: row.dateCreated,
                     },
+                };
+            };
+
+            // 只读自查: 单查一支 alpha 的当前接口值, 和库里这份比一比(不写任何数据)
+            async function wqpDebugFreshness(alphaId, pooledRow, parsed) {
+                const cacheKey = (wqpPoolUrl(parsed.serverUrl)).replace(/([?&])(order|limit|offset)=[^&]*/g, '$1').replace(/[?&]+$/, '');
+                let live = null;
+                try {
+                    const res = await fetchAlphasPage(`${wqpPoolUrl(parsed.serverUrl)}${wqpPoolUrl(parsed.serverUrl).includes('?') ? '&' : '?'}limit=1&order=-dateCreated&dateCreated>=${encodeURIComponent(pooledRow?.dateCreated || '')}`);
+                    live = (res.page || []).find((r) => r.id === alphaId) || null;
+                } catch (e) {
+                    return { error: `单查失败: ${e.message}`, cacheKey };
+                }
+                if (!live) return { cacheKey, note: '本次单查没取到这支(可能不在首屏), 库里值如下', color: pooledRow?.color ?? null };
+                const diffs = [];
+                for (const field of ['color', 'name', 'stage', 'category']) {
+                    const a = pooledRow?.[field] ?? null;
+                    const b = live?.[field] ?? null;
+                    if (JSON.stringify(a) !== JSON.stringify(b)) diffs.push(`${field}: 库里=${JSON.stringify(a)} 接口=${JSON.stringify(b)}`);
+                }
+                for (const [field, a, b] of [
+                    ['is.failedNumRA', pooledRow?.is?.failedNumRA, live?.is?.failedNumRA],
+                    ['is.failedNumPPA', pooledRow?.is?.failedNumPPA, live?.is?.failedNumPPA],
+                ]) {
+                    if (a !== b) diffs.push(`${field}: 库里=${a} 接口=${b}`);
+                }
+                return {
+                    cacheKey, inSync: diffs.length === 0, diffs,
+                    poolColor: pooledRow?.color ?? null, liveColor: live?.color ?? null,
                 };
             };
 
@@ -1237,8 +1339,57 @@ async function wqpPoolSet(key, value) {
     });
 }
 
+// 侧边栏「重建本地库」: 本地库在页面源 IndexedDB, SW 够不着, 只能找到 BRAIN 标签页让它自己清。
+// MAIN world 清完会 postMessage 回来, 由 sessionTokenBridge 转成 WQP_POOL_REBUILD_RESULT 发回 SW。
+const wqpPoolRebuildWaiters = new Map();
+let wqpPoolRebuildSeq = 0;
+async function wqpFindBrainTab() {
+    const tabs = await chrome.tabs.query({ url: 'https://platform.worldquantbrain.com/*' });
+    return tabs.find((t) => t.id != null) || tabs[0] || null;
+}
+function wqpRequestPoolRebuild(timeoutMs = 120000) {
+    return wqpFindBrainTab().then((tab) => {
+        if (!tab || tab.id == null) {
+            return { ok: false, error: '没有找到已打开的 BRAIN 页面, 请先打开 alpha 列表页再重建' };
+        }
+        const reqId = `pool-rebuild-${Date.now()}-${(wqpPoolRebuildSeq += 1)}`;
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                wqpPoolRebuildWaiters.delete(reqId);
+                resolve({ ok: false, error: '页面没有回应(可能标签页正在跳转), 请重试' });
+            }, timeoutMs);
+            wqpPoolRebuildWaiters.set(reqId, (result) => {
+                clearTimeout(timer);
+                resolve(result);
+            });
+            chrome.tabs.sendMessage(tab.id, { type: 'WQP_POOL_REBUILD', reqId }).catch((e) => {
+                clearTimeout(timer);
+                wqpPoolRebuildWaiters.delete(reqId);
+                resolve({ ok: false, error: `无法与页面通信: ${e?.message || e}` });
+            });
+        });
+    });
+}
+
 // 内容脚本可主动请求最近 N 条记录
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'WQP_POOL_REBUILD') {
+        // 侧边栏点「重建本地库」。本地库在页面源 IndexedDB, 这里只负责找到 BRAIN 标签页并等它回话。
+        // 用侧边栏那套 {ok, data} 信封, runtimeClient.sendMessage 才能正常解包。
+        wqpRequestPoolRebuild().then(
+            (result) => sendResponse(result?.ok ? { ok: true, data: result } : { ok: false, error: result?.error || '重建失败' }),
+            (error) => sendResponse({ ok: false, error: error?.message || String(error) })
+        );
+        return true;
+    }
+    if (msg && msg.type === 'WQP_POOL_REBUILD_RESULT') {
+        const waiter = wqpPoolRebuildWaiters.get(msg.reqId);
+        if (waiter) {
+            wqpPoolRebuildWaiters.delete(msg.reqId);
+            waiter(msg.result || { ok: false, error: '页面返回了空结果' });
+        }
+        return false;
+    }
     if (msg && msg.type === 'WQP_POOL_GET') {
         // 读完再发一条消息回页面(由 ISOLATED 内容脚本转发进 MAIN world):
         // MV3 service worker 里异步 sendResponse 会丢, 页面 MAIN world 又没有 chrome.storage

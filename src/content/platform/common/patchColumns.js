@@ -6,7 +6,7 @@
 
     const SEARCH = 'SUBMITTED?[s]:[r],...c?[o]:[],{';
     const VERSION_REGEX = /version:\s*"1\.0\.6"/;
-    const VERSION_REPLACE = 'version:"1.0.6-wqp12"';
+    const VERSION_REPLACE = 'version:"1.0.6-wqp13"';
 
     const EXTRA_COLUMNS = [
         {
@@ -101,6 +101,19 @@
             width: 80,
             // API 实测支持 order=regular.operatorCount 与 regular.operatorCount<N 筛选
             serverSortable: true
+        },
+        {
+            id: 'newFieldCount',
+            parent: 'is',
+            name: '新字段数',
+            active: false,
+            category: 'WQP',
+            activeTabsWithoutParent: ['unsubmitted', 'submitted'],
+            display: true,
+            type: 'integer',
+            width: 90,
+            // 值是插件按「本赛季未提交过 + 该 region 下 active」本地算的, 服务端不认识, 只能当前页内算
+            serverSortable: false
         },
     ];
     function buildReplacement() {

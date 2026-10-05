@@ -435,6 +435,198 @@ function injectFetchInterceptor(tabId) {
                 } catch (_) { /* 写入失败不影响本次筛选 */ }
             }
 
+            // ---- 新字段数(is.newFieldCount)数据集 ----
+            // 口径: alpha 表达式用到的数据字段里, 满足「本赛季没被提交过」且「在该 region/delay/universe 下 active」的个数。
+            // datafield 行里没有 active 标记 —— 能在某 region 组合下列出来本身就是 active 的定义,
+            // 所以 active 集合只能靠分页翻完整张字段表拿(实测 USA/TOP3000/D1 满 10000 条, offset=10000 起返回 400)。
+            const WQP_NF_TTL_FIELDS = 12 * 60 * 60 * 1000;  // 字段表变动很慢, 缓存 12 小时
+            const WQP_NF_TTL_SEASON = 60 * 60 * 1000;       // 对齐 fetchSubmittedAlphas 的 1 小时
+            const WQP_NF_KEY = 'wqpNewFields';              // 与本地库共库, 用前缀区分
+            const WQP_NF_STOPWORDS = new Set(['true', 'false', 'nan', 'and', 'or', 'not', 'if', 'else']);
+            const wqpNfState = { building: null, detail: new Map() }; // detail: alphaId -> 命中的新字段(控制台自查用)
+
+            // 不带括号的标识符 = 变量(字段); 带括号的是函数调用(算子)。
+            // fieldUsageFlag.js 里的同名逻辑上限只有 24 个 token, 列表规模下远远不够, 这里放宽到 200。
+            function wqpNfTokens(code) {
+                const tokens = new Set();
+                for (const match of String(code || '').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()/g)) {
+                    const token = match[1];
+                    if (token.length < 2 || WQP_NF_STOPWORDS.has(token.toLowerCase())) continue;
+                    tokens.add(token);
+                    if (tokens.size >= 200) break;
+                }
+                return tokens;
+            }
+
+            // 本自然季度的提交窗口, 与 utils.js fetchSubmittedAlphas 的四个硬编码时刻保持一致,
+            // 否则「新字段数」和页面上的「新」徽章会落在不同季度上。
+            function wqpNfSeasonRange() {
+                const now = new Date();
+                const year = now.getUTCFullYear();
+                const quarter = Math.floor((now.getMonth() + 3) / 3);
+                const bounds = [
+                    { start: `${year}-01-01T05:00:00.000Z`, end: `${year}-04-01T04:00:00.000Z` },
+                    { start: `${year}-04-01T04:00:00.000Z`, end: `${year}-07-01T04:00:00.000Z` },
+                    { start: `${year}-07-01T04:00:00.000Z`, end: `${year}-10-01T04:00:00.000Z` },
+                    { start: `${year}-10-01T04:00:00.000Z`, end: `${year + 1}-01-01T05:00:00.000Z` },
+                ];
+                return bounds[quarter - 1];
+            }
+
+            function wqpNfSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+            // 翻完该 region/delay/universe 组合下的整张 datafield 表, 返回 id 集合。
+            // /data-fields 认的是 instrumentType/region/delay/universe/dataset.id/limit/offset(不是 page/pageSize, 那两个会 400);
+            // count 上限 10000 只是显示封顶, 不能拿来判断翻完没有 —— 靠「本页为空」或 HTTP 400 收尾。
+            async function wqpNfCrawlFields(region, delay, universe) {
+                const ids = new Set();
+                const t0 = Date.now();
+                let backoff = 0;
+                for (let offset = 0; offset < 12000; offset += 50) {
+                    const url = 'https://api.worldquantbrain.com/data-fields?&instrumentType=EQUITY'
+                        + `&region=${encodeURIComponent(region)}&delay=${encodeURIComponent(delay)}`
+                        + `&universe=${encodeURIComponent(universe)}&dataset.id=&limit=50&offset=${offset}`;
+                    let res;
+                    for (;;) {
+                        try { res = await originalFetch(url, { credentials: 'include' }); }
+                        catch (err) { await wqpNfSleep(2000); continue; }
+                        if (res.status === 429) { // 限流就退避重试同一页, 已翻过的 offset 不重头来
+                            backoff = Math.min(backoff ? backoff * 2 : 5000, 60000);
+                            console.log(`[WQP] 新字段表限流, 退避 ${backoff / 1000}s (offset=${offset})`);
+                            await wqpNfSleep(backoff);
+                            continue;
+                        }
+                        break;
+                    }
+                    if (!res.ok) { console.log(`[WQP] 新字段表在 offset=${offset} 收到 HTTP ${res.status}, 判定翻完`); break; }
+                    let page = [];
+                    try { page = (await res.json())?.results || []; } catch (_) { page = []; }
+                    if (!page.length) break; // 本页为空 = 到底了
+                    page.forEach((f) => { if (f?.id) ids.add(f.id); });
+                    backoff = 0;
+                    if (offset % 2000 === 0) console.log(`[WQP] 新字段表 ${region}/D${delay}/${universe}: 已翻 ${ids.size} 个`);
+                    await wqpNfSleep(400);
+                }
+                console.log(`[WQP] 新字段表 ${region}/D${delay}/${universe} 翻完: ${ids.size} 个 active 字段, 用时 ${Math.round((Date.now() - t0) / 1000)}s`);
+                return ids;
+            }
+
+            async function wqpNfActiveFields(region, delay, universe) {
+                const combo = `${region}_${delay}_${universe}`;
+                const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
+                const rec = store.combos?.[combo];
+                if (rec?.ids?.length && Date.now() - (rec.at || 0) < WQP_NF_TTL_FIELDS) {
+                    return { ids: new Set(rec.ids), cached: true };
+                }
+                const ids = await wqpNfCrawlFields(region, delay, universe);
+                if (!ids.size) return { ids, cached: false };
+                const next = store.combos || {};
+                next[combo] = { ids: [...ids], at: Date.now() };
+                await wqpPoolSet(WQP_NF_KEY, { combos: next });
+                return { ids, cached: false };
+            }
+
+            // 本赛季已提交 alpha 用过的字段并集。
+            // 有意不做 utils.js:316-349 的「每天只取前 4 支 REGULAR」裁剪: 那是提交配额的副产品, 不是语义,
+            // 留着会把当天第 5 支之后用过的字段误判成「新」。
+            async function wqpNfSeasonUsedFields() {
+                const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
+                if (store.season?.ids?.length && Date.now() - (store.season?.at || 0) < WQP_NF_TTL_SEASON) {
+                    return { ids: new Set(store.season.ids), cached: true, submitted: store.season.submitted || 0 };
+                }
+                const { start, end } = wqpNfSeasonRange();
+                const range = `dateSubmitted%3E${start}&dateSubmitted%3C${end}`;
+                const base = 'https://api.worldquantbrain.com/users/self/alphas?limit=100'
+                    + `&status!=UNSUBMITTED%1FIS-FAIL&${range}&order=-dateCreated`;
+                const used = new Set();
+                const seen = new Set();
+                let submitted = 0;
+                let backoff = 0;
+                for (let offset = 0; offset < 6000; offset += 100) {
+                    let res;
+                    for (;;) {
+                        try { res = await originalFetch(`${base}&offset=${offset}`, { credentials: 'include' }); }
+                        catch (_) { await wqpNfSleep(2000); continue; }
+                        if (res.status === 429) {
+                            backoff = Math.min(backoff ? backoff * 2 : 5000, 60000);
+                            await wqpNfSleep(backoff);
+                            continue;
+                        }
+                        break;
+                    }
+                    if (!res.ok) break;
+                    let page = [];
+                    try { page = (await res.json())?.results || []; } catch (_) { page = []; }
+                    if (!page.length) break;
+                    page.forEach((a) => {
+                        if (!a?.id || seen.has(a.id)) return;
+                        seen.add(a.id);
+                        submitted += 1;
+                        wqpNfTokens(a.regular?.code).forEach((t) => used.add(t));
+                    });
+                    backoff = 0;
+                    if (page.length < 100) break; // 不足一页 = 到底
+                    await wqpNfSleep(400);
+                }
+                console.log(`[WQP] 本赛季(${start.slice(0, 10)} ~ ${end.slice(0, 10)})已提交 ${submitted} 支, 用过 ${used.size} 个字段`);
+                await wqpPoolSet(WQP_NF_KEY, { ...store, season: { ids: [...used], at: Date.now(), submitted } });
+                return { ids: used, cached: false, submitted };
+            }
+
+            // 本次查询是否真的用到新字段数列(筛选或排序), 决定要不要付翻字段表的代价
+            function wqpQueryUsesNewFieldCount(parsed) {
+                // WQP_FIELD_CANONICAL 只登记了短名, 长名要自己兜住(同 wqpValueOf 的归一方式)
+                const hit = (f) => (WQP_FIELD_CANONICAL[f] || f) === 'is.newFieldCount';
+                if (parsed?.clientOrder?.field && hit(parsed.clientOrder.field)) return true;
+                return (parsed?.clientFilters || []).some((f) => hit(f.field));
+            }
+
+            // 幂等: 给每行预算好 is.newFieldCount。只在本次查询真的用到该列时才会被 await。
+            async function wqpEnsureNewFieldCounts(rows) {
+                if (wqpNfState.building) return wqpNfState.building;
+                wqpNfState.building = (async () => {
+                    try {
+                        const combos = new Set();
+                        for (const row of rows) {
+                            const s = row.settings || {};
+                            if (!s.region) continue;
+                            combos.add(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
+                        }
+                        if (!combos.size) return;
+                        const t0 = Date.now();
+                        const [season, ...activeList] = await Promise.all([
+                            wqpNfSeasonUsedFields(),
+                            ...[...combos].map((c) => {
+                                const [region, delay, universe] = c.split('_');
+                                return wqpNfActiveFields(region, delay, universe);
+                            }),
+                        ]);
+                        const activeByCombo = new Map();
+                        [...combos].forEach((c, i) => activeByCombo.set(c, activeList[i].ids));
+                        const used = season.ids;
+                        wqpNfState.detail.clear();
+                        let touched = 0;
+                        for (const row of rows) {
+                            const s = row.settings || {};
+                            if (!s.region) { if (row.is) row.is.newFieldCount = 0; continue; }
+                            const active = activeByCombo.get(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
+                            if (!active) continue;
+                            const fresh = [...wqpNfTokens(row.regular?.code)].filter((t) => active.has(t) && !used.has(t));
+                            if (row.is) row.is.newFieldCount = fresh.length;
+                            wqpNfState.detail.set(row.id, fresh);
+                            touched += 1;
+                        }
+                        const withNew = rows.filter((r) => (r.is?.newFieldCount || 0) > 0).length;
+                        console.log(`[WQP] 新字段数构建完成: ${touched} 行, 其中 ${withNew} 行含新字段, 用时 ${Math.round((Date.now() - t0) / 1000)}s`);
+                    } catch (e) {
+                        console.warn('[WQP] 新字段数构建失败, 该列本次按 0 处理', e);
+                    } finally {
+                        wqpNfState.building = null;
+                    }
+                })();
+                return wqpNfState.building;
+            }
+
             // 一次性迁移: 1.10.25 把库存在页面源 IndexedDB, 1.10.26 起改存扩展源。
             // 这里把旧库分批拷进扩展源, 这样升级后不用重新全量下载。
             let wqpMigrateStarted = false;
@@ -582,8 +774,8 @@ function injectFetchInterceptor(tabId) {
             }
 
             // ---- 虚拟列查询: 内联实现(不再依赖 wqpClientQuery.js 注入是否成功) ----
-            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr', 'regular.operatorCount', 'operatorCount'];
-            const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount' };
+            const WQP_CLIENT_FIELDS = ['is.failedNumRA', 'failedNumRA', 'is.failedNumPPA', 'failedNumPPA', 'is.WQPPYS', 'WQPPYS', 'maxSelfCorr', 'maxPoolProdCorr', 'maxProdCorr', 'regular.operatorCount', 'operatorCount', 'is.newFieldCount', 'newFieldCount'];
+            const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount', newFieldCount: 'is.newFieldCount' };
             const WQP_SERVER_REWRITES = {};
             const WQP_OPS = ['<=', '>=', '!=', '<', '>', '='];
 
@@ -610,6 +802,8 @@ function injectFetchInterceptor(tabId) {
                 if (canonical === 'maxPoolProdCorr') return wqpMemoNumeric(row.id, 'pool');
                 if (canonical === 'maxSelfCorr') return wqpMemoNumeric(row.id, 'self');
                 if (canonical === 'operatorCount') return Number(row.regular?.operatorCount ?? NaN);
+                // 只读预算好的值: 这里绝不能现场解析表达式(wqpValueOf 一次交互会被调用 行数×筛选条件数 次)
+                if (canonical === 'is.newFieldCount') return Number(row.is?.newFieldCount ?? 0);
                 return row[canonical];
             }
             function wqpNumericOf(value) {
@@ -787,9 +981,13 @@ function injectFetchInterceptor(tabId) {
                     surviveConstrain: constrained.some((r) => r.id === alphaId),
                     surviveFilter: kept.some((r) => r.id === alphaId),
                     keptTotal: kept.length,
+                    // 新字段数被筛时, 把命中的字段 id 列出来, 方便核对某支为什么被留下
+                    newFields: (parsed.clientFilters || []).some((f) => (WQP_FIELD_CANONICAL[f.field] || f.field) === 'is.newFieldCount')
+                        ? (wqpNfState.detail.get(alphaId) || []) : undefined,
                     values: {
                         type: row.type, stage: row.stage, region: row.settings?.region, universe: row.settings?.universe,
                         sharpe: row.is?.sharpe, failedNumRA: row.is?.failedNumRA, failedNumPPA: row.is?.failedNumPPA,
+                        newFieldCount: row.is?.newFieldCount,
                         operatorCount: row.regular?.operatorCount, maxProdCorr: row.maxProdCorr,
                         pyramids: row.pyramids, themes: row.themes, tags: row.tags, dateCreated: row.dateCreated,
                     },
@@ -837,6 +1035,7 @@ function injectFetchInterceptor(tabId) {
                     wqpEnsureOption(root.is, 'failedNumRA', { type: 'integer', required: false, readOnly: true });
                     wqpEnsureOption(root.is, 'failedNumPPA', { type: 'integer', required: false, readOnly: true });
                     wqpEnsureOption(root.is, 'WQPPYS', { type: 'string', required: false, readOnly: true });
+                    wqpEnsureOption(root.is, 'newFieldCount', { type: 'integer', required: false, readOnly: true });
                 }
                 if (root.regular && typeof root.regular === 'object') {
                     wqpEnsureOption(root.regular, 'operatorCount', { type: 'integer', required: false, readOnly: true });
@@ -860,6 +1059,8 @@ function injectFetchInterceptor(tabId) {
                 if (clientQuery?.active) {
                     try {
                         const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
+                        // 新字段数要翻整张字段表 + 拉本季提交, 只有本次查询真的用到该列时才构建, 平时零开销
+                        if (wqpQueryUsesNewFieldCount(clientQuery)) await wqpEnsureNewFieldCounts(rows);
                         const filtered = wqpApply(rows, clientQuery);
                         const page = wqpPage(filtered, clientQuery);
                         const start = Math.max(0, clientQuery.offset || 0);

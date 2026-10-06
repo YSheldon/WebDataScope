@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "WorldQuant Scope",
     "description": "WorldQuant Scope is a browser extension that provides a set of tools to help you navigate the WorldQuant platform.",
-    "version": "1.10.50",
+    "version": "1.10.51",
     "author": "幻华",
     "icons": {
         "128": "img/logo.png"
@@ -138,6 +138,15 @@
                 "src/content/support/communityTopicAssistant.css"
             ],
             "run_at": "document_end"
+        },
+        {
+            "matches": [
+                "*://platform.worldquantbrain.com/*"
+            ],
+            "js": [
+                "src/content/shared/contextWatchdog.js"
+            ],
+            "run_at": "document_start"
         }
     ],
     "web_accessible_resources": [
@@ -158,15 +167,6 @@
                 "*://platform.worldquantbrain.com/*",
                 "https://platform.worldquantbrain.com/*"
             ]
-        },
-        {
-            "matches": [
-                "*://platform.worldquantbrain.com/*"
-            ],
-            "js": [
-                "src/content/shared/contextWatchdog.js"
-            ],
-            "run_at": "document_start"
         }
     ],
     "host_permissions": [

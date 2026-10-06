@@ -79,11 +79,19 @@ console.log('\n[3] chrome.runtime 存在但没有 sendMessage');
     await expectReject(m.sendMessage('X', {}), m.CONTEXT_LOST_HINT, 'reject 刷新提示');
 }
 
+console.log('\n[3b] sendMessage 还在、但 runtime.id 已经没了 —— 失效的另一种形态');
+{
+    const m = makeSendMessage({ runtime: { sendMessage() {} } });
+    check('isContextAlive() === false(靠 runtime.id 判定)', m.isContextAlive() === false);
+    await expectReject(m.sendMessage('X', {}), m.CONTEXT_LOST_HINT, 'reject 刷新提示');
+}
+
 console.log('\n[4] 上下文正常 —— 仍然按原来的契约走, 不被新逻辑误伤');
 {
     const sent = [];
     const m = makeSendMessage({
         runtime: {
+            id: 'live-extension-id',
             lastError: null,
             sendMessage(message, callback) {
                 sent.push(message);
@@ -104,6 +112,7 @@ console.log('\n[5] 上下文正常但后台报错 —— 错误文案照旧透�
 {
     const m = makeSendMessage({
         runtime: {
+            id: 'live-extension-id',
             lastError: { message: 'Could not establish connection.' },
             sendMessage(_message, callback) { callback(undefined); },
         },
@@ -114,6 +123,24 @@ console.log('\n[5] 上下文正常但后台报错 —— 错误文案照旧透�
     } catch (error) {
         check('reject lastError 文案', error.message === 'Could not establish connection.',
             error.message);
+    }
+}
+
+console.log('\n[5b] lastError 报 context invalidated —— 换成刷新提示, 不把英文抛给用户');
+{
+    const m = makeSendMessage({
+        runtime: {
+            id: 'live-extension-id',
+            lastError: { message: 'Extension context invalidated.' },
+            sendMessage(_message, callback) { callback(undefined); },
+        },
+    });
+    try {
+        await m.sendMessage('X', {});
+        check('替换为刷新提示', false, '本该 reject');
+    } catch (error) {
+        check('替换为刷新提示', error.message === m.CONTEXT_LOST_HINT, error.message);
+        check('不再出现英文原文', !/Extension context invalidated/.test(error.message), error.message);
     }
 }
 

@@ -133,12 +133,18 @@
     }
 
     // 扩展更新或重载之后，已经打开的页面里残留的旧 content script 还在跑，
-    // 但它们的 chrome.runtime 已经被置空 —— 直接 sendMessage 只会抛
-    // "Cannot read properties of undefined (reading 'sendMessage')"，对用户毫无意义。
+    // 但它们的扩展绑定已经失效。失效有两种形态，取决于时机：
+    //   1. chrome.runtime 被整个置空 —— 读 .sendMessage 抛 TypeError
+    //   2. chrome.runtime 还在，但一调用就回 lastError "Extension context invalidated."
+    // 两种都直接透给用户毫无意义，统一换成一句可操作的提示。
+    // 全扩展层面的兜底在 shared/contextWatchdog.js，这里只负责本功能自己的报错文案。
     const CONTEXT_LOST_HINT = '扩展已更新，本页面的旧脚本已失效，请刷新一次页面。';
+    const CONTEXT_LOST_PATTERN = /context invalidated/i;
 
     function isContextAlive() {
-        return typeof globalThis.chrome?.runtime?.sendMessage === 'function';
+        // runtime.id 在两种失效形态下都会消失，是比"sendMessage 是不是函数"更可靠的探针
+        if (!globalThis.chrome?.runtime?.id) return false;
+        return typeof chrome.runtime.sendMessage === 'function';
     }
 
     function sendMessage(type, payload = {}) {
@@ -149,7 +155,8 @@
             }
             chrome.runtime.sendMessage({ type, ...payload }, (response) => {
                 if (chrome.runtime.lastError) {
-                    reject(new Error(chrome.runtime.lastError.message));
+                    const message = chrome.runtime.lastError.message || '';
+                    reject(new Error(CONTEXT_LOST_PATTERN.test(message) ? CONTEXT_LOST_HINT : message));
                     return;
                 }
                 if (!response?.ok) {

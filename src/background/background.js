@@ -894,8 +894,10 @@ function injectFetchInterceptor(tabId) {
                 }
                 const text = String(actual ?? '');
                 const expect = String(raw ?? '');
-                if (op === '=') return text === expect;
-                if (op === '!=') return text !== expect;
+                // 平台多选会把多个值用 ␟(\u001f) 拼进同一个参数(如 status=UNSUBMITTED␟IS-FAIL),
+                // 字符串列(Pyramid 等)同样可能; = / != 按集合语义比较, 单值时行为与精确比较一致
+                if (op === '=') return expect.split('\u001f').includes(text);
+                if (op === '!=') return !expect.split('\u001f').includes(text);
                 return text.includes(expect);
             }
             function wqpMatchFilter(token) {

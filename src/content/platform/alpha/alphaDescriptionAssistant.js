@@ -132,8 +132,21 @@
         return regular ? { kind: 'REGULAR', regular, first: regular } : null;
     }
 
+    // 扩展更新或重载之后，已经打开的页面里残留的旧 content script 还在跑，
+    // 但它们的 chrome.runtime 已经被置空 —— 直接 sendMessage 只会抛
+    // "Cannot read properties of undefined (reading 'sendMessage')"，对用户毫无意义。
+    const CONTEXT_LOST_HINT = '扩展已更新，本页面的旧脚本已失效，请刷新一次页面。';
+
+    function isContextAlive() {
+        return typeof globalThis.chrome?.runtime?.sendMessage === 'function';
+    }
+
     function sendMessage(type, payload = {}) {
         return new Promise((resolve, reject) => {
+            if (!isContextAlive()) {
+                reject(new Error(CONTEXT_LOST_HINT));
+                return;
+            }
             chrome.runtime.sendMessage({ type, ...payload }, (response) => {
                 if (chrome.runtime.lastError) {
                     reject(new Error(chrome.runtime.lastError.message));
@@ -406,6 +419,21 @@
         button.textContent = targets.regular.value.trim() ? 'AI 重新生成描述' : 'AI 生成描述';
     }
 
+    function showReloadButton(controls) {
+        const actions = controls.querySelector('.wqp-alpha-description-ai__actions');
+        if (!actions || actions.querySelector('.wqp-alpha-description-ai__reload')) return;
+        const reload = document.createElement('button');
+        reload.type = 'button';
+        reload.className = 'wqp-alpha-description-ai__reload';
+        reload.textContent = '刷新页面';
+        reload.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            location.reload();
+        });
+        actions.appendChild(reload);
+    }
+
     async function handleGenerate(controls, targets) {
         const button = controls.querySelector('.wqp-alpha-description-ai__button');
         const alphaId = getAlphaId();
@@ -413,6 +441,16 @@
 
         button.disabled = true;
         button.textContent = '正在生成…';
+        controls.querySelector('.wqp-alpha-description-ai__reload')?.remove();
+
+        if (!isContextAlive()) {
+            button.disabled = false;
+            updateButtonLabel(controls, targets);
+            setStatus(controls, CONTEXT_LOST_HINT, 'error');
+            showReloadButton(controls);
+            return;
+        }
+
         setStatus(controls, '正在读取 Alpha 表达式与上下文…', 'loading');
 
         try {
@@ -451,7 +489,12 @@
             }
         } catch (error) {
             console.error('[WQP Alpha AI] Generation failed:', error);
-            setStatus(controls, error.message || String(error), 'error');
+            if (!isContextAlive()) {
+                setStatus(controls, CONTEXT_LOST_HINT, 'error');
+                showReloadButton(controls);
+            } else {
+                setStatus(controls, error.message || String(error), 'error');
+            }
         } finally {
             button.disabled = false;
             updateButtonLabel(controls, targets);

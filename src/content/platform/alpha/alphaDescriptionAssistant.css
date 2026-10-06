@@ -71,6 +71,30 @@
     outline-offset: 2px;
 }
 
+.wqp-alpha-description-ai__reload {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 7px 12px;
+    border: 1px solid #b91c1c;
+    border-radius: 4px;
+    background: #fff;
+    color: #b91c1c;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    line-height: 1;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.wqp-alpha-description-ai__reload:hover {
+    background: #fef2f2;
+}
+
+.wqp-alpha-description-ai__reload:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.35);
+    outline-offset: 2px;
+}
+
 .wqp-alpha-description-ai__button:disabled {
     cursor: wait;
     opacity: 0.65;
@@ -88,7 +112,8 @@
         white-space: normal;
     }
 
-    .wqp-alpha-description-ai__button {
+    .wqp-alpha-description-ai__button,
+    .wqp-alpha-description-ai__reload {
         align-self: flex-end;
     }
 }

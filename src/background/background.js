@@ -436,22 +436,28 @@ function injectFetchInterceptor(tabId) {
             }
 
             // ---- 新字段数(is.newFieldCount)数据集 ----
-            // 口径: alpha 表达式用到的数据字段里, 满足「本赛季没被提交过」且「在该 region/delay/universe 下 active」的个数。
-            // datafield 行里没有 active 标记 —— 能在某 region 组合下列出来本身就是 active 的定义,
-            // 所以 active 集合只能靠分页翻完整张字段表拿(实测 USA/TOP3000/D1 满 10000 条, offset=10000 起返回 400)。
-            const WQP_NF_TTL_FIELDS = 12 * 60 * 60 * 1000;  // 字段表变动很慢, 缓存 12 小时
+            // 口径: alpha 的 regular.code 里出现、但本赛季已提交 alpha 的代码里没出现过的字段个数。
+            // 已用集合来自 /users/self/alphas 本季已提交行(列表响应里 REGULAR 带 regular.code,
+            // SUPER 的代码在 combo/selection.code 里, 三个都计)。
+            // 曾经还要翻整张 data-fields 表做「该组合 active」过滤, 但能写进表达式并保存的字段
+            // 本身就是该组合可用的, 真正要剔的是 FASTEXPR 自赋值变量(x = ts_mean(...)) ——
+            // 那个本地就能识别, 不值得为它做分钟级的全表爬取(实测一开爬就 429)。
             const WQP_NF_TTL_SEASON = 60 * 60 * 1000;       // 对齐 fetchSubmittedAlphas 的 1 小时
             const WQP_NF_KEY = 'wqpNewFields';              // 与本地库共库, 用前缀区分
             const WQP_NF_STOPWORDS = new Set(['true', 'false', 'nan', 'and', 'or', 'not', 'if', 'else']);
             const wqpNfState = { building: null, detail: new Map() }; // detail: alphaId -> 命中的新字段(控制台自查用)
 
             // 不带括号的标识符 = 变量(字段); 带括号的是函数调用(算子)。
+            // FASTEXPR 的自赋值变量(x = ts_mean(close, 20) 之后用 x)不是字段, 按行首赋值识别并剔除。
             // fieldUsageFlag.js 里的同名逻辑上限只有 24 个 token, 列表规模下远远不够, 这里放宽到 200。
             function wqpNfTokens(code) {
+                const text = String(code || '');
+                const assigned = new Set();
+                for (const m of text.matchAll(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(?!=)/gm)) assigned.add(m[1]);
                 const tokens = new Set();
-                for (const match of String(code || '').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()/g)) {
+                for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()/g)) {
                     const token = match[1];
-                    if (token.length < 2 || WQP_NF_STOPWORDS.has(token.toLowerCase())) continue;
+                    if (token.length < 2 || WQP_NF_STOPWORDS.has(token.toLowerCase()) || assigned.has(token)) continue;
                     tokens.add(token);
                     if (tokens.size >= 200) break;
                 }
@@ -475,60 +481,10 @@ function injectFetchInterceptor(tabId) {
 
             function wqpNfSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-            // 翻完该 region/delay/universe 组合下的整张 datafield 表, 返回 id 集合。
-            // /data-fields 认的是 instrumentType/region/delay/universe/dataset.id/limit/offset(不是 page/pageSize, 那两个会 400);
-            // count 上限 10000 只是显示封顶, 不能拿来判断翻完没有 —— 靠「本页为空」或 HTTP 400 收尾。
-            async function wqpNfCrawlFields(region, delay, universe) {
-                const ids = new Set();
-                const t0 = Date.now();
-                let backoff = 0;
-                for (let offset = 0; offset < 12000; offset += 50) {
-                    const url = 'https://api.worldquantbrain.com/data-fields?&instrumentType=EQUITY'
-                        + `&region=${encodeURIComponent(region)}&delay=${encodeURIComponent(delay)}`
-                        + `&universe=${encodeURIComponent(universe)}&dataset.id=&limit=50&offset=${offset}`;
-                    let res;
-                    for (;;) {
-                        try { res = await originalFetch(url, { credentials: 'include' }); }
-                        catch (err) { await wqpNfSleep(2000); continue; }
-                        if (res.status === 429) { // 限流就退避重试同一页, 已翻过的 offset 不重头来
-                            backoff = Math.min(backoff ? backoff * 2 : 5000, 60000);
-                            console.log(`[WQP] 新字段表限流, 退避 ${backoff / 1000}s (offset=${offset})`);
-                            await wqpNfSleep(backoff);
-                            continue;
-                        }
-                        break;
-                    }
-                    if (!res.ok) { console.log(`[WQP] 新字段表在 offset=${offset} 收到 HTTP ${res.status}, 判定翻完`); break; }
-                    let page = [];
-                    try { page = (await res.json())?.results || []; } catch (_) { page = []; }
-                    if (!page.length) break; // 本页为空 = 到底了
-                    page.forEach((f) => { if (f?.id) ids.add(f.id); });
-                    backoff = 0;
-                    if (offset % 2000 === 0) console.log(`[WQP] 新字段表 ${region}/D${delay}/${universe}: 已翻 ${ids.size} 个`);
-                    await wqpNfSleep(400);
-                }
-                console.log(`[WQP] 新字段表 ${region}/D${delay}/${universe} 翻完: ${ids.size} 个 active 字段, 用时 ${Math.round((Date.now() - t0) / 1000)}s`);
-                return ids;
-            }
-
-            async function wqpNfActiveFields(region, delay, universe) {
-                const combo = `${region}_${delay}_${universe}`;
-                const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
-                const rec = store.combos?.[combo];
-                if (rec?.ids?.length && Date.now() - (rec.at || 0) < WQP_NF_TTL_FIELDS) {
-                    return { ids: new Set(rec.ids), cached: true };
-                }
-                const ids = await wqpNfCrawlFields(region, delay, universe);
-                if (!ids.size) return { ids, cached: false };
-                const next = store.combos || {};
-                next[combo] = { ids: [...ids], at: Date.now() };
-                await wqpPoolSet(WQP_NF_KEY, { combos: next });
-                return { ids, cached: false };
-            }
-
             // 本赛季已提交 alpha 用过的字段并集。
             // 有意不做 utils.js:316-349 的「每天只取前 4 支 REGULAR」裁剪: 那是提交配额的副产品, 不是语义,
             // 留着会把当天第 5 支之后用过的字段误判成「新」。
+            // SUPER 的代码不在 regular.code 里, combo/selection 也一并计入。
             async function wqpNfSeasonUsedFields() {
                 const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
                 if (store.season?.ids?.length && Date.now() - (store.season?.at || 0) < WQP_NF_TTL_SEASON) {
@@ -563,6 +519,8 @@ function injectFetchInterceptor(tabId) {
                         seen.add(a.id);
                         submitted += 1;
                         wqpNfTokens(a.regular?.code).forEach((t) => used.add(t));
+                        wqpNfTokens(a.combo?.code).forEach((t) => used.add(t));
+                        wqpNfTokens(a.selection?.code).forEach((t) => used.add(t));
                     });
                     backoff = 0;
                     if (page.length < 100) break; // 不足一页 = 到底
@@ -573,69 +531,23 @@ function injectFetchInterceptor(tabId) {
                 return { ids: used, cached: false, submitted };
             }
 
-            // 本次查询是否真的用到新字段数列(筛选或排序), 决定要不要付翻字段表的代价
-            function wqpQueryUsesNewFieldCount(parsed) {
-                // WQP_FIELD_CANONICAL 只登记了短名, 长名要自己兜住(同 wqpValueOf 的归一方式)
-                const hit = (f) => (WQP_FIELD_CANONICAL[f] || f) === 'is.newFieldCount';
-                if (parsed?.clientOrder?.field && hit(parsed.clientOrder.field)) return true;
-                return (parsed?.clientFilters || []).some((f) => hit(f.field));
-            }
-
-            // 数据集是否全部处于缓存有效期内。热缓存下构建只花本地读取, 纯显示的查询也值得算;
-            // 冷缓存会触发整张字段表的分钟级爬取, 维持按需(排序/筛选才触发)。
-            async function wqpNfCachesWarm(rows) {
-                const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
-                if (!store.season?.ids?.length || Date.now() - (store.season?.at || 0) >= WQP_NF_TTL_SEASON) return false;
-                const combos = new Set();
-                for (const row of rows) {
-                    const s = row.settings || {};
-                    if (!s.region) continue;
-                    combos.add(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
-                }
-                for (const combo of combos) {
-                    const rec = store.combos?.[combo];
-                    if (!rec?.ids?.length || Date.now() - (rec.at || 0) >= WQP_NF_TTL_FIELDS) return false;
-                }
-                return true;
-            }
-
-            // 幂等: 给每行预算好 is.newFieldCount。只在本次查询真的用到该列时才会被 await。
+            // 幂等: 给每行预算好 is.newFieldCount。构建只剩一次本季提交分页(31 支=1 页, 1h 缓存),
+            // 纯显示的查询也直接算, 不再有门控和分钟级爬表。
             async function wqpEnsureNewFieldCounts(rows) {
                 if (wqpNfState.building) return wqpNfState.building;
                 wqpNfState.building = (async () => {
                     try {
-                        const combos = new Set();
-                        for (const row of rows) {
-                            const s = row.settings || {};
-                            if (!s.region) continue;
-                            combos.add(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
-                        }
-                        if (!combos.size) return;
                         const t0 = Date.now();
-                        const [season, ...activeList] = await Promise.all([
-                            wqpNfSeasonUsedFields(),
-                            ...[...combos].map((c) => {
-                                const [region, delay, universe] = c.split('_');
-                                return wqpNfActiveFields(region, delay, universe);
-                            }),
-                        ]);
-                        const activeByCombo = new Map();
-                        [...combos].forEach((c, i) => activeByCombo.set(c, activeList[i].ids));
+                        const season = await wqpNfSeasonUsedFields();
                         const used = season.ids;
                         wqpNfState.detail.clear();
-                        let touched = 0;
                         for (const row of rows) {
-                            const s = row.settings || {};
-                            if (!s.region) { if (row.is) row.is.newFieldCount = 0; continue; }
-                            const active = activeByCombo.get(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
-                            if (!active) continue;
-                            const fresh = [...wqpNfTokens(row.regular?.code)].filter((t) => active.has(t) && !used.has(t));
+                            const fresh = [...wqpNfTokens(row.regular?.code)].filter((t) => !used.has(t));
                             if (row.is) row.is.newFieldCount = fresh.length;
                             wqpNfState.detail.set(row.id, fresh);
-                            touched += 1;
                         }
                         const withNew = rows.filter((r) => (r.is?.newFieldCount || 0) > 0).length;
-                        console.log(`[WQP] 新字段数构建完成: ${touched} 行, 其中 ${withNew} 行含新字段, 用时 ${Math.round((Date.now() - t0) / 1000)}s`);
+                        console.log(`[WQP] 新字段数构建完成: ${rows.length} 行, 其中 ${withNew} 行含新字段, 用时 ${Math.round((Date.now() - t0) / 1000)}s`);
                     } catch (e) {
                         console.warn('[WQP] 新字段数构建失败, 该列本次按 0 处理', e);
                     } finally {
@@ -1181,11 +1093,8 @@ function injectFetchInterceptor(tabId) {
                 if (clientQuery?.active) {
                     try {
                         const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
-                        // 新字段数要翻整张字段表 + 拉本季提交: 排序/筛选到该列时必建;
-                        // 纯显示只在数据集缓存都热时才算(零额外请求), 冷缓存维持空白不惊扰
-                        if (wqpQueryUsesNewFieldCount(clientQuery) || await wqpNfCachesWarm(rows)) {
-                            await wqpEnsureNewFieldCounts(rows);
-                        }
+                        // 新字段数: 构建只剩一次本季提交分页(1h 缓存), 纯显示也直接算, 不再爬字段表
+                        await wqpEnsureNewFieldCounts(rows);
                         const filtered = wqpApply(rows, clientQuery);
                         const page = wqpPage(filtered, clientQuery);
                         const start = Math.max(0, clientQuery.offset || 0);

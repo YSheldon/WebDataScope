@@ -182,8 +182,11 @@
                 code = code.replace(VERSION_REGEX, `version:"${vm[1]}${VERSION_SUFFIX}"`);
                 console.log(`[WQP] patchColumns: version ${vm[1]} → ${vm[1]}${VERSION_SUFFIX}，强制刷新 localStorage 列缓存`, src);
             } else if (patched) {
-                // 原来这里是裸 if, 失配就悄无声息地什么都不做, 排查时看不出列为什么不生效
-                console.error('[WQP] patchColumns: 列定义已注入, 但没匹配到 version 串 → localStorage 列缓存不会失效, 新增的列可能不显示', src);
+                // version 串失配是预期内的: 平台早已把版本号挪进 localStorage 缓存 JSON
+                // (bundle 里已无 version:"1.x.x" 字样), 这里只是平台哪天改回去时的兜底。
+                // 列的真正生效路径是上面的 wqpMergeCachedColumns —— document_start 时
+                // 已把缺失列合并进用户缓存且保留勾选状态, 所以这不是错误, 只是提示。
+                console.warn('[WQP] patchColumns: 列定义已注入; version 串未匹配(平台已内联版本号, 预期内) — 列缓存由 localStorage 合并兜底, 列不受影响', src);
             }
             const s = document.createElement('script');
             s.textContent = code;

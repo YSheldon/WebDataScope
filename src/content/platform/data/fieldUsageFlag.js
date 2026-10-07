@@ -42,29 +42,75 @@ async function usageOf(fieldId) {
 
 function usageBadge(fieldId, usage) {
     const badge = document.createElement('span');
+    // 判定基准 = 已提交列表的拉取时刻; 1 小时缓存意味着刚提交的 alpha 最多滞后一小时才反映
+    const updatedAt = getSubmittedFieldsUpdatedAt();
+    const basis = updatedAt
+        ? new Date(updatedAt).toLocaleString()
+        : '尚未拉取(点击拉取)';
     if (!usage.count) {
         badge.textContent = '新';
-        badge.title = `${fieldId}\n本赛季提交中未使用(新字段)`;
+        badge.title = `${fieldId}\n本赛季提交中未使用(新字段)\n判定基准: ${basis}\n点击强刷已提交列表`;
         badge.style.cssText = [
             'display:inline-block', 'margin-left:6px', 'padding:0 6px',
             'border-radius:6px', 'background-color:#2e7d32', 'color:#fff',
             'font-size:12px', 'font-weight:600', 'line-height:1.6',
-            'vertical-align:middle',
+            'vertical-align:middle', 'cursor:pointer',
         ].join(';');
     } else {
         badge.textContent = `已用${usage.count}`;
         const ids = usage.alphaIds.slice(0, 8).join(', ');
         const more = usage.alphaIds.length > 8 ? `\n...共 ${usage.alphaIds.length} 支` : '';
-        badge.title = `${fieldId}\n本赛季提交已使用: ${ids}${more}`;
+        badge.title = `${fieldId}\n本赛季提交已使用: ${ids}${more}\n判定基准: ${basis}\n点击强刷已提交列表`;
         badge.style.cssText = [
             'display:inline-block', 'margin-left:6px', 'padding:0 6px',
             'border-radius:6px', 'background-color:#9e9e9e', 'color:#fff',
             'font-size:12px', 'font-weight:600', 'line-height:1.6',
-            'vertical-align:middle',
+            'vertical-align:middle', 'cursor:pointer',
         ].join(';');
     }
     badge.className = 'wq-field-usage-badge';
+    badge.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        forceRefreshFieldUsage(badge);
+    });
     return badge;
+}
+
+// 点击徽章: 无视 1 小时缓存重新拉取已提交列表, 然后把三路展示(列表行徽章、
+// alpha 条、字段详情横幅)全部推倒重建。上一次点击未完成前忽略后续点击。
+let usageRefreshInFlight = false;
+async function forceRefreshFieldUsage(clickedBadge) {
+    if (usageRefreshInFlight) return;
+    usageRefreshInFlight = true;
+    const originalText = clickedBadge.textContent;
+    clickedBadge.textContent = '刷新中…';
+    try {
+        await getSubmittedFields(true);
+        FIELD_USAGE_STATE.usageByField.clear();
+        // 三路展示各自有「建过就跳过」的状态, 全部复位让下一轮重建
+        FIELD_USAGE_STATE.flaggedRows = new WeakSet();
+        document.querySelectorAll('.wq-field-usage-badge').forEach((el) => {
+            if (el !== clickedBadge) el.remove();
+        });
+        document.getElementById('wqp-field-usage-banner')?.remove();
+        document.querySelectorAll('[id^="wqp-alpha-field-strip"]').forEach((strip) => {
+            strip.dataset.done = '';
+        });
+        document.querySelectorAll('.wqp-code-strip').forEach((strip) => {
+            strip.dataset.code = '';
+        });
+        await mainPass();
+        // mainPass 会把可见徽章全部重建; 能走到这说明重建完成, 恢复被点徽章的文案
+        // (若它已被替换, 改的是游离节点, 无副作用)
+        clickedBadge.textContent = originalText;
+    } catch (error) {
+        console.error('[WQP] 字段使用强刷失败:', error);
+        clickedBadge.textContent = originalText;
+        clickedBadge.title += '\n[上次强刷失败, 请稍后重试]';
+    } finally {
+        usageRefreshInFlight = false;
+    }
 }
 
 // ---------- 数据字段列表行打标 ----------

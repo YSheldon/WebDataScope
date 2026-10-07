@@ -313,40 +313,9 @@ async function fetchSubmittedAlphas(buttonId, forceRefresh = false) { // Add for
         throw error; // 抛出错误以便调用方处理
     }
 
-    // 过滤REGULAR类型：每天只保留前4个
-    const regularAlphas = allAlphas.filter(item => item.type === 'REGULAR');
-    const otherAlphas = allAlphas.filter(item => item.type !== 'REGULAR');
-
-    console.log('原始REGULAR alpha数量:', regularAlphas.length);
-
-    // 按日期分组
-    const alphasByDate = {};
-    regularAlphas.forEach(alpha => {
-        if (!alpha.dateSubmitted) return;
-
-        // 获取日期部分（YYYY-MM-DD）
-        const dateStr = alpha.dateSubmitted.split('T')[0];
-
-        if (!alphasByDate[dateStr]) {
-            alphasByDate[dateStr] = [];
-        }
-        alphasByDate[dateStr].push(alpha);
-    });
-
-    // 每天按提交时间排序，只保留前4个
-    const filteredRegularAlphas = [];
-    Object.keys(alphasByDate).forEach(dateStr => {
-        const dayAlphas = alphasByDate[dateStr];
-        // 按dateSubmitted升序排序（早的在前）
-        dayAlphas.sort((a, b) => new Date(a.dateSubmitted) - new Date(b.dateSubmitted));
-        // 只取前4个
-        filteredRegularAlphas.push(...dayAlphas.slice(0, 4));
-    });
-
-    console.log('过滤后REGULAR alpha数量（每天前4个）:', filteredRegularAlphas.length);
-
-    // 合并过滤后的REGULAR alpha和其他类型的alpha
-    const filteredAlphas = [...filteredRegularAlphas, ...otherAlphas];
+    // 这里必须保留全部已提交 REGULAR, 不能按天裁剪 —— 字段使用徽章/双击查询都拿这份
+    // 列表判断「字段本赛季是否被提交过」, 当天第 5 支起被裁掉就会永久误报「新」。
+    const filteredAlphas = allAlphas;
 
     // 更新缓存
     WQP_SubmittedAlphasCache = {
@@ -361,6 +330,13 @@ async function fetchSubmittedAlphas(buttonId, forceRefresh = false) { // Add for
 
 let submittedFieldsCache = { data: [], lastUpdated: 0 }; // Used by getSubmittedFields
 let submittedFieldsPromise = null; // Used by getSubmittedFields
+
+// 「新/已用」判定的数据基准时间(ms epoch): 这份已提交列表是什么时候从 API 拉的。
+// 从 storage 命中时保留的是当初拉取时刻, 所以语义始终是「数据多新」而不是「多新读的」。
+// 0 = 从未成功拉取过。
+function getSubmittedFieldsUpdatedAt() {
+    return WQP_SubmittedAlphasCache.lastUpdated || 0;
+}
 
 async function getSubmittedFields(forceRefresh = false) {
     if (submittedFieldsPromise && !forceRefresh) {

@@ -448,12 +448,13 @@ function injectFetchInterceptor(tabId) {
             const wqpNfState = { building: null, detail: new Map() }; // detail: alphaId -> 命中的新字段(控制台自查用)
 
             // 不带括号的标识符 = 变量(字段); 带括号的是函数调用(算子)。
-            // FASTEXPR 的自赋值变量(x = ts_mean(close, 20) 之后用 x)不是字段, 按行首赋值识别并剔除。
+            // 名字后面跟单个 = 的不是字段引用: 行首自赋值(x = ts_mean(...))和函数具名参数
+            // (winsorize(x, std=4) 里的 std)。== / != / <= / >= 不是赋值, 不剔除。
             // fieldUsageFlag.js 里的同名逻辑上限只有 24 个 token, 列表规模下远远不够, 这里放宽到 200。
             function wqpNfTokens(code) {
                 const text = String(code || '');
                 const assigned = new Set();
-                for (const m of text.matchAll(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(?!=)/gm)) assigned.add(m[1]);
+                for (const m of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(?!=)/g)) assigned.add(m[1]);
                 const tokens = new Set();
                 for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()/g)) {
                     const token = match[1];

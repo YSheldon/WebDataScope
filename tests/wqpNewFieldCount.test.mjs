@@ -66,6 +66,10 @@ check('多个自赋值变量全部剔除', (() => {
   const t = toks('ma = ts_mean(close, 20);\nvol = ts_std_dev(returns, 20);\nrank(ma / vol)');
   return JSON.stringify(t) === '["close","returns"]';
 })(), JSON.stringify(toks('ma = ts_mean(close, 20);\nvol = ts_std_dev(returns, 20);\nrank(ma / vol)')));
+// 函数具名参数(winsorize(x, std=4))不是字段 —— qM0jXaGZ 被误报 2 个新字段的原因
+check('具名参数不算字段', JSON.stringify(toks('winsorize(rank(fnd86_average_score), std=4)')) === '["fnd86_average_score"]',
+  toks('winsorize(rank(fnd86_average_score), std=4)').join(','));
+check('无空格的具名参数同样剔除', !toks('winsorize(rank(close),std=4)').includes('std'));
 
 console.log('\n== 2. 季度边界 ==');
 const r = api.wqpNfSeasonRange();

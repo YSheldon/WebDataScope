@@ -24,7 +24,7 @@ const sandbox = `
   const originalFetch = async () => ({ ok: false, status: 599, json: async () => ({ results: [] }) });
   const WQP_FIELD_CANONICAL = { newFieldCount: 'is.newFieldCount' };
 ${block}
-  return { wqpNfTokens, wqpNfSeasonRange, wqpEnsureNewFieldCounts, wqpQueryUsesNewFieldCount, wqpNfState };
+  return { wqpNfTokens, wqpNfSeasonRange, wqpEnsureNewFieldCounts, wqpQueryUsesNewFieldCount, wqpNfCachesWarm, wqpNfState };
 `;
 const factory = new Function('store', 'window', sandbox);
 const api = factory(store, {});
@@ -72,6 +72,31 @@ check('排序 is.newFieldCount → true', uses({ clientFilters: [], clientOrder:
 check('筛选 failedNumRA → false(不白付翻表代价)', uses({ clientFilters: [{ field: 'is.failedNumRA' }], clientOrder: null }) === false);
 check('无筛选无排序 → false', uses({ clientFilters: [], clientOrder: null }) === false);
 check('无参数 → false', uses(undefined) === false);
+
+// ---- wqpNfCachesWarm: 纯显示的查询只有在数据集缓存全热时才值得构建 ----
+// (放在 section 4 之前: 那节缺离线数据会 process.exit(0), 排在它后面的用例永远跑不到)
+const now = Date.now();
+const warmProbe = (storeMap) => {
+  const probe = new Function('store', 'window',
+    sandbox.slice(0, sandbox.lastIndexOf('  return {')) + '\n  return { wqpNfCachesWarm };');
+  return probe(storeMap, {}).wqpNfCachesWarm;
+};
+const warmStoreWith = (mutate) => {
+  const m = new Map([['wqpNewFields', {
+    season: { ids: ['f_used'], at: now, submitted: 3 },
+    combos: { AMR_1_TOP500: { ids: ['f_a', 'f_b'], at: now } },
+  }]]);
+  mutate(m.get('wqpNewFields'));
+  return m;
+};
+const rowAmr = { id: 'x1', settings: { region: 'AMR', delay: 1, universe: 'TOP500' }, regular: { code: 'rank(f_a)' }, is: {} };
+check('wqpNfCachesWarm: season+combo 都在有效期内 → 热', await warmProbe(warmStoreWith(() => {}))([rowAmr]) === true);
+check('wqpNfCachesWarm: season 过期 → 冷', await warmProbe(warmStoreWith((s) => { s.season.at = now - 2 * 60 * 60 * 1000; }))([rowAmr]) === false);
+check('wqpNfCachesWarm: combo 字段表过期 → 冷', await warmProbe(warmStoreWith((s) => { s.combos.AMR_1_TOP500.at = now - 13 * 60 * 60 * 1000; }))([rowAmr]) === false);
+check('wqpNfCachesWarm: season 空 ids → 冷', await warmProbe(warmStoreWith((s) => { s.season.ids = []; }))([rowAmr]) === false);
+check('wqpNfCachesWarm: 行的 combo 没进过缓存 → 冷', await warmProbe(warmStoreWith(() => {}))([{ id: 'x2', settings: { region: 'EUR', delay: 1, universe: 'TOP2500' }, regular: { code: 'x' }, is: {} }]) === false);
+check('wqpNfCachesWarm: 无 region 的行不产生 combo, 仅 season 热 → 热', await warmProbe(warmStoreWith(() => {}))([{ id: 'x3', settings: {}, regular: { code: 'x' }, is: {} }]) === true);
+
 
 console.log('\n== 4. 真实池子离线验证 ==');
 const dataDir = process.env.WQP_VERIFY_DIR || path.resolve(root, '..', '..', 'Work', 'WorldQuant-Brain-Alpha');

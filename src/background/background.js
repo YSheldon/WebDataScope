@@ -581,6 +581,24 @@ function injectFetchInterceptor(tabId) {
                 return (parsed?.clientFilters || []).some((f) => hit(f.field));
             }
 
+            // 数据集是否全部处于缓存有效期内。热缓存下构建只花本地读取, 纯显示的查询也值得算;
+            // 冷缓存会触发整张字段表的分钟级爬取, 维持按需(排序/筛选才触发)。
+            async function wqpNfCachesWarm(rows) {
+                const store = (await wqpPoolGet(WQP_NF_KEY)) || {};
+                if (!store.season?.ids?.length || Date.now() - (store.season?.at || 0) >= WQP_NF_TTL_SEASON) return false;
+                const combos = new Set();
+                for (const row of rows) {
+                    const s = row.settings || {};
+                    if (!s.region) continue;
+                    combos.add(`${s.region}_${s.delay ?? 1}_${s.universe || 'TOP3000'}`);
+                }
+                for (const combo of combos) {
+                    const rec = store.combos?.[combo];
+                    if (!rec?.ids?.length || Date.now() - (rec.at || 0) >= WQP_NF_TTL_FIELDS) return false;
+                }
+                return true;
+            }
+
             // 幂等: 给每行预算好 is.newFieldCount。只在本次查询真的用到该列时才会被 await。
             async function wqpEnsureNewFieldCounts(rows) {
                 if (wqpNfState.building) return wqpNfState.building;
@@ -1163,8 +1181,11 @@ function injectFetchInterceptor(tabId) {
                 if (clientQuery?.active) {
                     try {
                         const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
-                        // 新字段数要翻整张字段表 + 拉本季提交, 只有本次查询真的用到该列时才构建, 平时零开销
-                        if (wqpQueryUsesNewFieldCount(clientQuery)) await wqpEnsureNewFieldCounts(rows);
+                        // 新字段数要翻整张字段表 + 拉本季提交: 排序/筛选到该列时必建;
+                        // 纯显示只在数据集缓存都热时才算(零额外请求), 冷缓存维持空白不惊扰
+                        if (wqpQueryUsesNewFieldCount(clientQuery) || await wqpNfCachesWarm(rows)) {
+                            await wqpEnsureNewFieldCounts(rows);
+                        }
                         const filtered = wqpApply(rows, clientQuery);
                         const page = wqpPage(filtered, clientQuery);
                         const start = Math.max(0, clientQuery.offset || 0);

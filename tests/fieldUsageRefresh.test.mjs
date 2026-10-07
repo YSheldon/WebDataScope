@@ -176,5 +176,47 @@ console.log('\n[5] 防重入计数(独立场景, 避免 gate 时序干扰)');
     check('重拉带 forceRefresh=true', fetches[0] === true);
 }
 
+console.log('\n[6] fetchSubmittedAlphas 函数体全程可执行(裁剪块删除后的残留引用回归)');
+{
+    // 背景: 删除 top-4 裁剪块时, 尾部日志还在引用已删的 filteredRegularAlphas ——
+    // node --check 查不出运行时 ReferenceError, 结果拉取一完成就炸,
+    // getSubmittedFields 整体 reject, 双击弹窗报「查询失败: filteredRegularAlphas is not defined」。
+    // 这里把函数体放进沙箱真正跑一遍, 让这类残留引用在测试期就炸出来。
+    const body = slice(utilsSrc, 'async function fetchSubmittedAlphas', 'let submittedFieldsCache');
+    check('没有指向已删变量的残留引用',
+        !/\b(filteredRegularAlphas|regularAlphas|otherAlphas)\b/.test(body));
+
+    // eslint-disable-next-line no-new-func
+    const run = new Function(`
+        var WQP_SubmittedAlphasCache = { data: [], lastUpdated: 0 };
+        const chrome = { storage: { local: {
+            // utils.js 的 get 用的是回调风格, 必须真调 callback
+            get: (_key, cb) => cb({}),
+            remove: async () => {},
+            set: async () => {},
+        } } };
+        const console = { log() {}, error() {}, warn() {} };
+        const getDataFromUrlWithOffsetParallel = async () => {
+            // 同一天 5 支 REGULAR + 1 支 SUPER: 旧裁剪会砍到 4 支, 现在必须全保留
+            const regs = Array.from({ length: 5 }, (_, i) => ({
+                id: 'r' + i, type: 'REGULAR', dateSubmitted: '2026-10-02T0' + i + ':00:00Z',
+            }));
+            return [...regs, { id: 's1', type: 'SUPER', dateSubmitted: '2026-10-02T09:00:00Z' }];
+        };
+${body}
+        return { fn: fetchSubmittedAlphas, get cache() { return WQP_SubmittedAlphasCache; } };
+    `);
+    // 注意: 不能解构 cache —— 解构会把 getter 求值成快照, 而函数是给变量赋"新对象",
+    // 快照永远指向旧的那个。必须通过 ctx.cache 实时读。
+    const ctx = run();
+    const alphas = await ctx.fn('btn', true);
+    check('同一天 5 支 REGULAR 全部保留', alphas.filter(a => a.type === 'REGULAR').length === 5,
+        String(alphas.length));
+    check('SUPER 等其他类型也保留', alphas.some(a => a.type === 'SUPER'));
+    check('缓存写入完整列表且盖时间戳',
+        ctx.cache.lastUpdated > 0 && ctx.cache.data.length === 6,
+        JSON.stringify({ n: ctx.cache.data.length, t: ctx.cache.lastUpdated }));
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

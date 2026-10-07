@@ -323,7 +323,7 @@ async function fetchSubmittedAlphas(buttonId, forceRefresh = false) { // Add for
         lastUpdated: Date.now()
     };
     chrome.storage.local.set({ WQP_SubmittedAlphasCache: WQP_SubmittedAlphasCache });
-    console.log('已提交的Alpha列表更新完成，总数:', filteredAlphas.length, '(REGULAR:', filteredRegularAlphas.length, ', 其他:', otherAlphas.length, ')');
+    console.log('已提交的Alpha列表更新完成，总数:', filteredAlphas.length);
     // setButtonState(buttonId, `加载完成 (${filteredAlphas.length}个)`, 'enable'); // Commented out
     return filteredAlphas;
 }

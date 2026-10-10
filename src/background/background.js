@@ -1173,6 +1173,79 @@ function injectFetchInterceptor(tabId) {
                 }
                 return originalSetRequestHeader.apply(this, arguments);
             };
+
+            // ---- Prod/Pool/Self Corr 查完立刻反映到已渲染的表格 ----
+            // 单元格的值是取列表那一刻从 localStorage 抄进行的, 查完 corr 平台不会自己重取
+            // (react-query 的 focus/reconnect 重取都被平台关了), 只能等翻页/F5。
+            // 这里监听缓存同步与表格重绘, 把可见行的三列单元格直接刷成缓存最新值;
+            // 只在缓存有该 alpha 且算出的展示文本非空时才写, 绝不清空平台自己渲染的内容。
+            const CORR_PATCH_COLUMNS = [['Pool Corr', 'pool'], ['Prod Corr', 'prod'], ['Self Corr', 'self']];
+            let corrPatchTimer = null;
+            let corrMemoCache = null;
+            function corrMemo() {
+                if (corrMemoCache) return corrMemoCache;
+                try { corrMemoCache = JSON.parse(localStorage.getItem('WQP_ProdMemoCache') || '{}') || {}; }
+                catch (_) { corrMemoCache = {}; }
+                return corrMemoCache;
+            }
+            function scheduleCorrPatch(delay) {
+                if (corrPatchTimer) return;
+                corrPatchTimer = setTimeout(() => { corrPatchTimer = null; try { patchCorrCells(); } catch (_) {} }, delay || 150);
+            }
+            function corrCellText(metric) {
+                if (typeof metric?.display === 'string' && metric.display) return metric.display;
+                const numeric = Number(metric?.max);
+                if (!Number.isFinite(numeric)) return '';
+                const prefix = metric?.lowerBound ? '≥' : '';
+                const icon = metric?.source === 'local' ? 'Ⓛ' : 'Ⓟ';
+                return `${prefix}${numeric.toFixed(4)} ${icon}`;
+            }
+            function locateCorrColumns(headerCells) {
+                const index = {};
+                headerCells.forEach((th, i) => {
+                    const text = (th.textContent || '').trim();
+                    const hit = CORR_PATCH_COLUMNS.find(([title]) => text === title || text.startsWith(title));
+                    if (hit && index[hit[1]] === undefined) index[hit[1]] = i;
+                });
+                return index;
+            }
+            function patchCorrCells() {
+                const memo = corrMemo();
+                for (const thead of document.querySelectorAll('.rt-thead.-header')) {
+                    const headerCells = [...thead.querySelectorAll('.rt-th')];
+                    if (!headerCells.length) continue;
+                    const corrIndex = locateCorrColumns(headerCells);
+                    const kinds = Object.keys(corrIndex);
+                    if (!kinds.length) continue;
+                    const idIndex = headerCells.findIndex((th) => (th.textContent || '').trim() === 'ID');
+                    const table = thead.closest('.rt-table') || thead.parentElement;
+                    for (const group of table.querySelectorAll('.rt-tr-group')) {
+                        const cells = group.querySelectorAll('.rt-td');
+                        if (!cells.length || (idIndex >= 0 && cells.length <= idIndex)) continue;
+                        let alphaId = '';
+                        const link = group.querySelector('a[href*="/alpha/"]');
+                        const linkMatch = link && String(link.getAttribute('href') || '').match(/\/alpha\/([^/?#]+)/);
+                        if (linkMatch) alphaId = decodeURIComponent(linkMatch[1]);
+                        else if (idIndex >= 0) alphaId = (cells[idIndex].textContent || '').trim();
+                        if (!alphaId) continue;
+                        const entry = memo[alphaId];
+                        if (!entry) continue;
+                        for (const kind of kinds) {
+                            const text = corrCellText(entry[kind]);
+                            const cell = cells[corrIndex[kind]];
+                            if (text && cell && cell.textContent.trim() !== text) cell.textContent = text;
+                        }
+                    }
+                }
+            }
+            window.addEventListener('message', (event) => {
+                // prodmemo.js(ISOLATED)在每次 SAVE/CALCULATE 后都会同步缓存并广播
+                if (event.source === window && event.data?.type === 'WQP_PRODMEMO_CACHE_SYNCED') {
+                    corrMemoCache = null; // 强制下次读最新的 localStorage
+                    scheduleCorrPatch(0);
+                }
+            });
+            new MutationObserver(() => scheduleCorrPatch()).observe(document.documentElement, { childList: true, subtree: true });
         }
     }).catch(err => console.error("注入 Fetch 拦截器失败：", err)));
 }

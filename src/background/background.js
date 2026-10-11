@@ -298,6 +298,44 @@ function injectFetchInterceptor(tabId) {
                 'maxProdCorr': { serverSortable: false },
                 'regular.operatorCount': { serverSortable: true },
             };
+            // ---- alpha 颜色本地记忆 ----
+            // 平台的颜色本身会持久化到 API, 但虚拟列视图的行来自本地池, 池行的 color 是
+            // 建池那一刻的旧值 —— 上色之后一刷新就被旧值盖掉, 超出「最近 3 页」池刷新
+            // 范围的更是彻底丢。这里把见过的颜色记在 localStorage:
+            //   写: 平台上色请求(PUT/PATCH body 带 color)当场记下;
+            //   学: 装饰新鲜 API 行(getAlphaCheckStates)时, 没记录的 id 回填;
+            //   用: 两条路径的行都拿本地记录覆盖行上的旧值。
+            const WQP_COLOR_KEY = 'WQP_AlphaColorOverrides';
+            let wqpColorCache = null;
+            function wqpColors() {
+                if (wqpColorCache) return wqpColorCache;
+                try { wqpColorCache = JSON.parse(localStorage.getItem(WQP_COLOR_KEY) || '{}') || {}; }
+                catch (_) { wqpColorCache = {}; }
+                return wqpColorCache;
+            }
+            function wqpRecordColor(alphaId, color) {
+                if (!alphaId) return;
+                const colors = wqpColors();
+                if (colors[alphaId] === color) return;
+                colors[alphaId] = color;
+                try { localStorage.setItem(WQP_COLOR_KEY, JSON.stringify(colors)); } catch (_) {}
+            }
+            function wqpApplyLocalColor(item) {
+                if (!item?.id) return;
+                const local = wqpColors()[item.id];
+                if (local !== undefined) { item.color = local; return; }
+                if (item.color) wqpRecordColor(item.id, item.color); // 顺带学习新鲜行上的颜色
+            }
+            function wqpCaptureColorMutation(method, url, rawBody) {
+                if (method !== 'PUT' && method !== 'PATCH' && method !== 'POST') return;
+                const match = String(url || '').match(/\/users\/self\/alphas\/([A-Za-z0-9]+)(\?|$)/);
+                if (!match) return;
+                if (typeof rawBody !== 'string' || !rawBody.includes('color')) return;
+                let body = null;
+                try { body = JSON.parse(rawBody); } catch (_) { return; }
+                if (body && 'color' in body) wqpRecordColor(match[1], body.color);
+            }
+
             function getAlphaCheckStates(originalData) {
                 function readProdMemoCache() {
                     try {
@@ -369,6 +407,7 @@ function injectFetchInterceptor(tabId) {
                     item.maxProdCorr = getMaxProdCorr(prodMemoCache, item?.id);
                     item.maxPoolProdCorr = getMaxPoolProdCorr(prodMemoCache, item?.id);
                     item.maxSelfCorr = getMaxSelfCorr(prodMemoCache, item?.id);
+                    wqpApplyLocalColor(item); // 颜色本地记忆: 覆盖旧值 + 学习未记录的颜色
                     // 容错处理：如果is/checks不存在，直接赋值0
                     if (!item?.is?.checks || !Array.isArray(item.is.checks)) {
                         item.is = item.is || {};
@@ -1091,9 +1130,19 @@ function injectFetchInterceptor(tabId) {
                 const clientQuery = wqpParseUrl(url);
                 if (clientQuery?.active) wqpLastQuery = { url, parsed: clientQuery };
                 console.debug('[WQP] alphas query:', url.slice(0, 130), '| client path:', clientQuery?.active || false);
+                // 上色请求当场记下(平台把颜色 PUT/PATCH 到 /users/self/alphas/{id})
+                try { wqpCaptureColorMutation(method, url, args[1]?.body); } catch (_) {}
                 if (clientQuery?.active) {
                     try {
                         const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
+                        // 颜色本地记忆: 池行的 color 是建池那一刻的旧值, 用本地记录覆盖
+                        // (只覆盖不学习 —— 学习只在新鲜 API 行上做, 见 getAlphaCheckStates)
+                        const colorOverrides = wqpColors();
+                        if (Object.keys(colorOverrides).length) {
+                            for (const row of rows) {
+                                if (row.id && colorOverrides[row.id] !== undefined && row.color !== colorOverrides[row.id]) row.color = colorOverrides[row.id];
+                            }
+                        }
                         // 新字段数: 构建只剩一次本季提交分页(1h 缓存), 纯显示也直接算, 不再爬字段表
                         await wqpEnsureNewFieldCounts(rows);
                         const filtered = wqpApply(rows, clientQuery);
@@ -1172,6 +1221,18 @@ function injectFetchInterceptor(tabId) {
                     postCapturedSessionToken(value);
                 }
                 return originalSetRequestHeader.apply(this, arguments);
+            };
+            // 兜底: 平台若走 XHR 上色, 也能捕获
+            const originalXHROpen = XMLHttpRequest.prototype.open;
+            const originalXHRSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                this.__wqpMethod = method;
+                this.__wqpUrl = url;
+                return originalXHROpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function (body) {
+                try { wqpCaptureColorMutation(this.__wqpMethod, this.__wqpUrl, typeof body === 'string' ? body : undefined); } catch (_) {}
+                return originalXHRSend.apply(this, arguments);
             };
 
             // ---- Prod/Pool/Self Corr 查完立刻反映到已渲染的表格 ----

@@ -125,5 +125,108 @@ console.log('\n[4] 其它字段的比较行为不被误伤');
     check('数值 = 字符串形式(3.0 vs 3)现在也算相等', c('=', '3.0', '3', 'is.failedNumRA') === true);
 }
 
+console.log('\n[5] 自绘 Pyramid 下拉 UI: 按钮/勾选/写回 ␟ 拼接');
+{
+    // 切自绘 UI 源码
+    const a = src.indexOf('// ---- Pyramid 筛选下拉:');
+    const b = src.indexOf('\n    }).catch(', a);
+    if (a < 0 || b < 0) throw new Error('UI 源码切片失败');
+    const uiBlock = src.slice(a, b).replace(/\n\s*}\s*$/, ''); // 去掉注入函数的收尾大括号
+
+    function makeCell2(text) {
+      const cell = {
+        _text: text,
+        get textContent() { return cell._text; },
+        set textContent(v) { cell._text = v; },
+        _children: [], appendChild(c) { cell._children.push(c); },
+        _qs: null,
+        _listeners: {},
+        style: { cssText: '' },
+        className: '', type: '', title: '', checked: false,
+        querySelector: (sel) => {
+          if (cell._qs && cell._qs[sel]) return cell._qs[sel];
+          if (sel.startsWith('.')) {
+            const cls = sel.slice(1);
+            return cell._children.find((c) => c.className === cls) || null; // 真 DOM 能查到 append 的子节点
+          }
+          return null;
+        },
+        querySelectorAll: () => [],
+        addEventListener(type, fn) { cell._listeners[type] = fn; },
+        getBoundingClientRect: () => ({ left: 10, bottom: 20 }),
+        contains: () => false,
+        remove() {},
+      };
+      return cell;
+    }
+    function makeInput(value) {
+      return { value, events: [], dispatchEvent(e) { this.events.push(e); } };
+    }
+
+    // 假 HTMLInputElement: 原型 value 存取器记录 set 调用
+    class HTMLInputElement {}
+    Object.defineProperty(HTMLInputElement.prototype, 'value', {
+      get() { return this._native; },
+      set(v) { HTMLInputElement._lastSet = v; this._native = v; },
+    });
+    class FakeEvent { constructor(type, opts) { this.type = type; this.bubbles = !!(opts && opts.bubbles); } }
+
+    const headCells = [makeCell2('ID'), makeCell2('Pyramid')];
+    const head = { querySelectorAll: (s) => (s === '.rt-th' ? headCells : []) };
+    const filterInput = makeInput('');
+    const pyrCell = makeCell2('');
+    pyrCell._qs = { input: filterInput };
+    const filterCells = [makeCell2('ID'), pyrCell];
+    const filterHead = { querySelectorAll: (s) => (s === '.rt-th' ? filterCells : []) };
+    const document2 = {
+      querySelectorAll: (s) => (s === '.rt-thead.-header' ? [head] : s === '.rt-thead.-filters' ? [filterHead] : []),
+      body: { appendChild: (n) => appended.push(n) },
+      addEventListener() {}, removeEventListener() {},
+      createElement: () => makeCell2(''),
+    };
+    const appended = [];
+    const POOL_ROWS = [{ is: { WQPPYS: 'model/pv' } }, { is: { WQPPYS: 'fundamental' } }];
+
+    const sandbox = `
+      const wqpPoolDb = async () => ({
+        transaction: () => ({ objectStore: () => ({ openCursor: () => {
+          const req = {};
+          queueMicrotask(() => {
+            req.result = { value: { rows: __poolRows }, continue: () => { req.result = null; req.onsuccess(); } };
+            if (req.onsuccess) req.onsuccess();
+          });
+          return req;
+        } }) }),
+        close: () => {},
+      });
+      const localStorage = { getItem: () => null, setItem: () => {} };
+      const document = __document;
+${ensureBlock}
+${choiceBlock}
+${uiBlock}
+      return { ensurePyramidFilterUi, pyramidSelectedFromInput, writePyramidSelection };
+    `;
+    // eslint-disable-next-line no-new-func
+    const ui = new Function('__poolRows', '__document', 'HTMLInputElement', 'Event', sandbox)(POOL_ROWS, document2, HTMLInputElement, FakeEvent);
+
+    // [5a] 筛选格里出现 ▾ 按钮
+    await ui.ensurePyramidFilterUi();
+    check('筛选格补了 ▾ 按钮', filterCells[1]._children.some((c) => c.className === 'wqp-pyramid-filter-btn'));
+    const before = filterCells[1]._children.length;
+    await ui.ensurePyramidFilterUi();
+    check('重复调度不会堆按钮(幂等)', filterCells[1]._children.length === before);
+
+    // [5b] 勾选写回: 走原型 setter + 派发 input 事件
+    const selected = ui.pyramidSelectedFromInput(filterInput);
+    selected.add('model'); selected.add('pv');
+    ui.writePyramidSelection(filterInput, selected);
+    check('写回走原型 setter(绕过 React 值追踪)', HTMLInputElement._lastSet === 'model\u001fpv', String(HTMLInputElement._lastSet));
+    check('派发了 input 事件', filterInput.events.some((e) => e.type === 'input' && e.bubbles));
+    check('读回: 输入框当前值解析出两个段', (() => {
+      const s2 = ui.pyramidSelectedFromInput({ value: 'model\u001fpv' });
+      return s2.has('model') && s2.has('pv') && s2.size === 2;
+    })());
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

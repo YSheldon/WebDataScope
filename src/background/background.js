@@ -1114,9 +1114,12 @@ function injectFetchInterceptor(tabId) {
             // Pyramid 下拉的选项: 从本地池所有行的 is.WQPPYS 里收集段值(每段一项),
             // 反映用户实际持有过的金字塔; 池为空/读不到时回退 string 类型(原文本框)。
             let wqpPyramidChoicesPromise = null;
+            let wqpPyramidChoicesAt = 0;
             function wqpPyramidChoices() {
-                if (!wqpPyramidChoicesPromise) {
-                    wqpPyramidChoicesPromise = (async () => {
+                // 空结果 30s 后允许重试(池可能刚建好); 非空结果长期缓存
+                if (wqpPyramidChoicesPromise && Date.now() - wqpPyramidChoicesAt < 30000) return wqpPyramidChoicesPromise;
+                wqpPyramidChoicesAt = Date.now();
+                wqpPyramidChoicesPromise = (async () => {
                         try {
                             const db = await wqpPoolDb();
                             const rows = await new Promise((resolve) => {
@@ -1141,7 +1144,6 @@ function injectFetchInterceptor(tabId) {
                             return [];
                         }
                     })();
-                }
                 return wqpPyramidChoicesPromise;
             }
 
@@ -1365,9 +1367,118 @@ function injectFetchInterceptor(tabId) {
             });
             // document_start 时 <html> 可能还没生成, documentElement 为 null 会让 observe 抛错、
             // 中断注入函数尾部 —— 等 DOM 再挂
-            const wqpStartCorrObserver = () => new MutationObserver(() => scheduleCorrPatch()).observe(document.documentElement, { childList: true, subtree: true });
+            const wqpStartCorrObserver = () => new MutationObserver(() => { scheduleCorrPatch(); schedulePyramidFilter(); }).observe(document.documentElement, { childList: true, subtree: true });
             if (document.documentElement) wqpStartCorrObserver();
             else document.addEventListener('DOMContentLoaded', wqpStartCorrObserver, { once: true });
+
+            // ---- Pyramid 筛选下拉: 平台的筛选下拉只认顶层/settings.children 的 choice 字段,
+            // is.* 虚拟列只有文本框(且本扩展的 OPTIONS 注入不总是被平台消费 —— 实测有时整段
+            // OPTIONS 都不走拦截)。所以在 Pyramid 的筛选格里补一个自己的多选下拉: 勾选后把
+            // 选中的段值用 ␟ 拼进平台的筛选输入框并派发 input 事件, 让平台走原生流程应用过滤。
+            function nativeInputValue(input, value) {
+                const desc = (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype)
+                    ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') : null;
+                if (desc && desc.set) desc.set.call(input, value); // 绕过 React 的值追踪, onChange 才会触发
+                else input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            function pyramidSelectedFromInput(input) {
+                return new Set(String(input?.value || '').split('\u001f').filter(Boolean));
+            }
+            function writePyramidSelection(input, selected) {
+                nativeInputValue(input, [...selected].join('\u001f'));
+            }
+            function locateFilterCell(headers, filterTheads, title) {
+                const colIndex = headers.findIndex((th) => (th.textContent || '').trim() === title);
+                if (colIndex < 0) return null;
+                for (const thead of filterTheads) {
+                    const cells = [...thead.querySelectorAll('.rt-th')];
+                    if (cells.length > colIndex) return cells[colIndex];
+                }
+                return null;
+            }
+            let pyramidUiTimer = null;
+            let pyramidPanel = null;
+            function schedulePyramidFilter(delay) {
+                if (pyramidUiTimer) return;
+                pyramidUiTimer = setTimeout(() => { pyramidUiTimer = null; try { ensurePyramidFilterUi(); } catch (_) {} }, delay || 250);
+            }
+            async function ensurePyramidFilterUi() {
+                const choices = await wqpPyramidChoices();
+                if (!choices.length) return; // 池里还没有任何金字塔段值, 保留原文本框
+                const headTheads = [...document.querySelectorAll('.rt-thead.-header')];
+                const filterTheads = [...document.querySelectorAll('.rt-thead.-filters')];
+                const fallback = filterTheads.length ? [] : [...document.querySelectorAll('.rt-thead')].filter((h) => h.querySelector('input'));
+                for (const head of headTheads) {
+                    const headers = [...head.querySelectorAll('.rt-th')];
+                    if (!headers.some((th) => (th.textContent || '').trim() === 'Pyramid')) continue;
+                    const cell = locateFilterCell(headers, filterTheads.length ? filterTheads : fallback, 'Pyramid');
+                    if (!cell || cell.querySelector('.wqp-pyramid-filter-btn')) continue;
+                    const input = cell.querySelector('input');
+                    if (!input) continue;
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'wqp-pyramid-filter-btn';
+                    btn.textContent = '▾';
+                    btn.title = '按 Pyramid 勾选筛选';
+                    btn.style.cssText = 'margin-left:4px; padding:0 5px; cursor:pointer; line-height:1.4;';
+                    btn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        togglePyramidPanel(btn, input);
+                    });
+                    cell.appendChild(btn);
+                }
+            }
+            function closePyramidPanel() {
+                if (pyramidPanel) { pyramidPanel.remove(); pyramidPanel = null; }
+            }
+            async function togglePyramidPanel(btn, input) {
+                if (pyramidPanel) { closePyramidPanel(); return; }
+                const choices = await wqpPyramidChoices();
+                if (!choices.length) return;
+                const selected = pyramidSelectedFromInput(input); // 面板状态以输入框当前值为准, 无需额外存储
+                const panel = document.createElement('div');
+                panel.className = 'wqp-pyramid-filter-panel';
+                panel.style.cssText = 'position:fixed; z-index:2147483000; background:#fff; border:1px solid #d0d7de; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.16); padding:8px 10px; max-height:280px; overflow:auto; min-width:150px;';
+                for (const choice of choices) {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display:flex; align-items:center; gap:6px; padding:2px; cursor:pointer; font-size:12px; color:#24292f;';
+                    const box = document.createElement('input');
+                    box.type = 'checkbox';
+                    box.checked = selected.has(choice.value);
+                    box.addEventListener('change', () => {
+                        if (box.checked) selected.add(choice.value); else selected.delete(choice.value);
+                        writePyramidSelection(input, selected);
+                    });
+                    const text = document.createElement('span');
+                    text.textContent = choice.label;
+                    label.append(box, text);
+                    panel.appendChild(label);
+                }
+                const clear = document.createElement('button');
+                clear.type = 'button';
+                clear.textContent = '清除';
+                clear.style.cssText = 'margin-top:6px; padding:1px 8px; cursor:pointer; font-size:12px;';
+                clear.addEventListener('click', () => {
+                    selected.clear();
+                    panel.querySelectorAll('input[type="checkbox"]').forEach((b) => { b.checked = false; });
+                    writePyramidSelection(input, selected);
+                });
+                panel.appendChild(clear);
+                const rect = btn.getBoundingClientRect();
+                panel.style.left = `${Math.max(4, Math.round(rect.left))}px`;
+                panel.style.top = `${Math.round(rect.bottom) + 2}px`;
+                document.body.appendChild(panel);
+                pyramidPanel = panel;
+                const close = (event) => {
+                    if (panel.contains(event.target) || btn.contains(event.target)) return;
+                    closePyramidPanel();
+                    document.removeEventListener('mousedown', close, true);
+                };
+                document.addEventListener('mousedown', close, true);
+            }
         }
     }).catch(err => console.error("注入 Fetch 拦截器失败：", err)));
 }

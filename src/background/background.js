@@ -1135,6 +1135,7 @@ function injectFetchInterceptor(tabId) {
                                 const v = String(row?.is?.WQPPYS || '');
                                 for (const seg of v.split('/')) if (seg) segs.add(seg);
                             }
+                            console.log(`[WQP] Pyramid 下拉选项: ${segs.size} 个${segs.size ? ' (' + [...segs].join(', ') + ')' : ' (池为空或还没建, 回退文本框)'}`);
                             return [...segs].sort().map((s) => ({ value: s, label: s }));
                         } catch (_) {
                             return [];
@@ -1236,6 +1237,8 @@ function injectFetchInterceptor(tabId) {
                 if (method === 'OPTIONS' && /\/users\/[^/]+\/alphas\/?$/.test(url.split('?')[0])) {
                     try {
                         const schema = await wqpInjectAlphaOptions(await response.clone().json());
+                        const wqppys = schema?.is?.children?.WQPPYS || schema?.WQPPYS || null;
+                        console.log('[WQP] OPTIONS WQPPYS →', wqppys ? `${wqppys.type}, choices=${(wqppys.choices || []).length}` : '未注入');
                         return new Response(JSON.stringify(schema), {
                             status: response.status,
                             statusText: response.statusText,
@@ -1360,7 +1363,11 @@ function injectFetchInterceptor(tabId) {
                     scheduleCorrPatch(0);
                 }
             });
-            new MutationObserver(() => scheduleCorrPatch()).observe(document.documentElement, { childList: true, subtree: true });
+            // document_start 时 <html> 可能还没生成, documentElement 为 null 会让 observe 抛错、
+            // 中断注入函数尾部 —— 等 DOM 再挂
+            const wqpStartCorrObserver = () => new MutationObserver(() => scheduleCorrPatch()).observe(document.documentElement, { childList: true, subtree: true });
+            if (document.documentElement) wqpStartCorrObserver();
+            else document.addEventListener('DOMContentLoaded', wqpStartCorrObserver, { once: true });
         }
     }).catch(err => console.error("注入 Fetch 拦截器失败：", err)));
 }

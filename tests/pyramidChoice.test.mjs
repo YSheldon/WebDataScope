@@ -19,8 +19,9 @@ function slice(startMark, endMark) {
 
 const choiceBlock = slice('let wqpPyramidChoicesPromise = null;', 'async function wqpInjectAlphaOptions');
 const injectBlock = slice('async function wqpInjectAlphaOptions', '\n            window.fetch = async function');
-const compareBlock = slice('function wqpCompare(op, actual, raw, field) {', 'function wqpMatchFilter(token) {');
 const ensureBlock = slice('function wqpEnsureOption(node, key, spec) {', 'let wqpPyramidChoicesPromise');
+const pipelineBlock = slice('const WQP_CLIENT_FIELDS = ', 'function wqpApply(rows, parsed) {');
+const applyBlock = slice('function wqpApply(rows, parsed) {', 'function wqpPage(rows, parsed) {');
 
 let pass = 0, fail = 0;
 const check = (name, cond, extra = '') => {
@@ -46,20 +47,23 @@ function makeApi(poolRows) {
         }),
         close: () => {},
       });
-      const localStorage = { getItem: () => null, setItem: () => {} };
-      const WQP_FIELD_CANONICAL = { failedNumRA: 'is.failedNumRA', failedNumPPA: 'is.failedNumPPA', WQPPYS: 'is.WQPPYS', 'regular.operatorCount': 'operatorCount', newFieldCount: 'is.newFieldCount' };
-      const WQP_COLUMN_REGISTRY = {};
-      function wqpPath(obj, path) { return String(path || '').split('.').reduce((o, k) => (o == null ? o : o[k]), obj); }
-      function wqpNumericOf(value) {
-        if (typeof value === 'number' && Number.isFinite(value)) return value;
-        const m = String(value ?? '').match(/-?\\d+(?:\\.\\d+)?/);
-        return m ? Number(m[0]) : NaN;
+      // memo 桩: 每支 alpha 都视为已查过 prod corr(0.5), 避免 <0.708 把 NaN 行全杀
+      const memoData = {};
+      for (const id of ['MP32APrn', '58g225z6', 'pw5MwXQj', 'A1v2PP8d', 'p1', 'p2', 'p3', 'p4']) {
+        memoData[id] = { prod: { max: 0.5, source: 'platform' }, pool: null, self: null };
       }
+      const localStorage = {
+        getItem: (k) => (k === 'WQP_ProdMemoCache' ? JSON.stringify(memoData) : null),
+        setItem: () => {},
+      };
+      const window = {};
+      const WQP_COLUMN_REGISTRY = {};
+${pipelineBlock}
+${applyBlock}
 ${ensureBlock}
 ${choiceBlock}
 ${injectBlock}
-${compareBlock}
-      return { wqpInjectAlphaOptions, wqpPyramidChoices, wqpCompare };
+      return { wqpInjectAlphaOptions, wqpPyramidChoices, wqpCompare, wqpParseUrl, wqpConstrain, wqpApply };
     `;
     // eslint-disable-next-line no-new-func
     return new Function('__poolRows', sandbox)(poolRows);
@@ -226,6 +230,28 @@ ${uiBlock}
       const s2 = ui.pyramidSelectedFromInput({ value: 'model\u001fpv' });
       return s2.has('model') && s2.has('pv') && s2.size === 2;
     })());
+}
+
+console.log('\n[6] E2E: 用户实测的完整 URL(含没有运算符的 Pyramid 参数)');
+{
+    const api = makeApi(POOL);
+    const url = 'https://api.worldquantbrain.com/users/self/alphas?limit=100&offset=0&status=UNSUBMITTED&is.newFieldCount>0&maxProdCorr<0.708&is.failedNumPPA<1&type=REGULAR&is.WQPPYSfundamental&dateCreated>=2026-09-12T00:00:00-04:00&dateCreated<2026-10-12T00:00:00-04:00&order=-dateCreated&hidden=false';
+    const parsed = api.wqpParseUrl(url);
+    const wqppys = parsed.clientFilters.filter((f) => f.field === 'is.WQPPYS');
+    check('无运算符的 Pyramid 参数被识别为 =', wqppys.length === 1 && wqppys[0].op === '=' && wqppys[0].value === 'fundamental',
+        JSON.stringify(parsed.clientFilters));
+    check('其余三个虚拟列过滤照常解析', parsed.clientFilters.length === 4, JSON.stringify(parsed.clientFilters));
+    check('Pyramid 参数不再透传给服务端', !parsed.serverUrl.includes('WQPPYS'), parsed.serverUrl);
+
+    const rows = [
+      { id: 'MP32APrn', type: 'REGULAR', hidden: false, dateCreated: '2026-10-11T00:00:00Z', is: { failedNumRA: 4, failedNumPPA: 0, WQPPYS: 'pv', newFieldCount: 2 } },
+      { id: '58g225z6', type: 'REGULAR', hidden: false, dateCreated: '2026-10-11T00:00:00Z', is: { failedNumRA: 2, failedNumPPA: 0, WQPPYS: 'pv', newFieldCount: 1 } },
+      { id: 'pw5MwXQj', type: 'REGULAR', hidden: false, dateCreated: '2026-10-10T00:00:00Z', is: { failedNumRA: 5, failedNumPPA: 0, WQPPYS: 'fundamental', newFieldCount: 1 } },
+      { id: 'A1v2PP8d', type: 'REGULAR', hidden: false, dateCreated: '2026-10-08T00:00:00Z', is: { failedNumRA: 4, failedNumPPA: 0, WQPPYS: 'pv', newFieldCount: 3 } },
+    ];
+    const kept = api.wqpApply(api.wqpConstrain(rows, url), parsed);
+    check('只留 fundamental 行(pv 行被筛掉)', JSON.stringify(kept.map((r) => r.id)) === '["pw5MwXQj"]',
+        JSON.stringify(kept.map((r) => r.id)));
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

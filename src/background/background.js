@@ -887,6 +887,10 @@ function injectFetchInterceptor(tabId) {
                     for (const op of WQP_OPS) {
                         if (rest.startsWith(op)) return { field: WQP_FIELD_CANONICAL[field] || field, op, value: rest.slice(op.length) };
                     }
+                    // 平台的文本筛选芯片生成的参数没有运算符(实测: is.WQPPYSfundamental),
+                    // 等价于 = ; 不处理的话参数被透传给服务端, 筛选完全失效
+                    if (rest) return { field: WQP_FIELD_CANONICAL[field] || field, op: '=', value: rest };
+                    return null;
                 }
                 return null;
             }

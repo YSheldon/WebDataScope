@@ -851,10 +851,11 @@ function injectFetchInterceptor(tabId) {
                 const m = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
                 return m ? Number(m[0]) : NaN;
             }
-            function wqpCompare(op, actual, raw) {
+            function wqpCompare(op, actual, raw, field) {
+                const canonical = WQP_FIELD_CANONICAL[field] || field;
                 const left = wqpNumericOf(actual);
                 const right = Number(raw);
-                if (Number.isFinite(left) && Number.isFinite(right)) {
+                if (Number.isFinite(left) && Number.isFinite(right) && canonical !== 'is.WQPPYS') {
                     if (op === '<') return left < right;
                     if (op === '>') return left > right;
                     if (op === '<=') return left <= right;
@@ -864,6 +865,14 @@ function injectFetchInterceptor(tabId) {
                 }
                 const text = String(actual ?? '');
                 const expect = String(raw ?? '');
+                // Pyramid 列是多段值(如 model/pv): 下拉勾选的语义是「段命中」—— 选中的任一段
+                // 出现在该行的段里即通过; 多选沿用平台的 ␟ 拼接, != 为取反
+                if (canonical === 'is.WQPPYS' && (op === '=' || op === '!=')) {
+                    const selected = expect.split('\u001f').filter(Boolean);
+                    const segs = text.split('/').filter(Boolean);
+                    const hit = selected.some((s) => segs.includes(s));
+                    return op === '=' ? hit : !hit;
+                }
                 // 平台多选会把多个值用 ␟(\u001f) 拼进同一个参数(如 status=UNSUBMITTED␟IS-FAIL),
                 // 字符串列(Pyramid 等)同样可能; = / != 按集合语义比较, 单值时行为与精确比较一致
                 if (op === '=') return expect.split('\u001f').includes(text);
@@ -994,8 +1003,8 @@ function injectFetchInterceptor(tabId) {
                         }
                         const actual = wqpPath(r, f.field);
                         if (f.op === '=') {
-                            if (!f.value.split('\u001f').includes(String(actual))) return false;
-                        } else if (!wqpCompare(f.op, actual, f.value)) return false;
+                            if (!wqpCompare('=', actual, f.value, f.field)) return false;
+                        } else if (!wqpCompare(f.op, actual, f.value, f.field)) return false;
                     }
                     return true;
                 });
@@ -1013,7 +1022,7 @@ function injectFetchInterceptor(tabId) {
                     const value = wqpValueOf(row, f.field);
                     const corrNa = ['maxProdCorr', 'maxPoolProdCorr', 'maxSelfCorr'].includes(f.field)
                         && !Number.isFinite(value) && (f.op === '<' || f.op === '<=');
-                    const pass = corrNa || wqpCompare(f.op, value, f.value);
+                    const pass = corrNa || wqpCompare(f.op, value, f.value, f.field);
                     return `${f.field} ${f.op} ${f.value} | 值=${Number.isNaN(value) ? 'NaN(没查过)' : value} | ${pass ? '通过' : '被筛掉'}`;
                 });
                 const constrained = wqpConstrain(rows, url);
@@ -1078,7 +1087,7 @@ function injectFetchInterceptor(tabId) {
                         if (CORR_FIELDS.includes(filter.field) && !Number.isFinite(value) && (filter.op === '<' || filter.op === '<=')) {
                             return true;
                         }
-                        return wqpCompare(filter.op, value, filter.value);
+                        return wqpCompare(filter.op, value, filter.value, filter.field);
                     });
                 }
                 if (parsed.clientOrder) {
@@ -1102,13 +1111,50 @@ function injectFetchInterceptor(tabId) {
                 node.children = node.children && typeof node.children === 'object' ? node.children : {};
                 if (!node.children[key]) node.children[key] = spec;
             }
-            function wqpInjectAlphaOptions(root, seen = new Set()) {
+            // Pyramid 下拉的选项: 从本地池所有行的 is.WQPPYS 里收集段值(每段一项),
+            // 反映用户实际持有过的金字塔; 池为空/读不到时回退 string 类型(原文本框)。
+            let wqpPyramidChoicesPromise = null;
+            function wqpPyramidChoices() {
+                if (!wqpPyramidChoicesPromise) {
+                    wqpPyramidChoicesPromise = (async () => {
+                        try {
+                            const db = await wqpPoolDb();
+                            const rows = await new Promise((resolve) => {
+                                const out = [];
+                                const req = db.transaction('pools', 'readonly').objectStore('pools').openCursor();
+                                req.onsuccess = () => {
+                                    const c = req.result;
+                                    if (c) { for (const row of (c.value?.rows || [])) out.push(row); c.continue(); }
+                                    else resolve(out);
+                                };
+                                req.onerror = () => resolve(out);
+                            });
+                            db.close();
+                            const segs = new Set();
+                            for (const row of rows) {
+                                const v = String(row?.is?.WQPPYS || '');
+                                for (const seg of v.split('/')) if (seg) segs.add(seg);
+                            }
+                            return [...segs].sort().map((s) => ({ value: s, label: s }));
+                        } catch (_) {
+                            return [];
+                        }
+                    })();
+                }
+                return wqpPyramidChoicesPromise;
+            }
+
+            async function wqpInjectAlphaOptions(root, seen = new Set()) {
                 if (!root || typeof root !== 'object' || seen.has(root)) return root;
                 seen.add(root);
                 if (root.is && typeof root.is === 'object') {
                     wqpEnsureOption(root.is, 'failedNumRA', { type: 'integer', required: false, readOnly: true });
                     wqpEnsureOption(root.is, 'failedNumPPA', { type: 'integer', required: false, readOnly: true });
-                    wqpEnsureOption(root.is, 'WQPPYS', { type: 'string', required: false, readOnly: true });
+                    // type:'choice' + choices 会让平台把筛选行渲染成 Region 同款的下拉勾选
+                    const pyramids = await wqpPyramidChoices();
+                    wqpEnsureOption(root.is, 'WQPPYS', pyramids.length
+                        ? { type: 'choice', required: false, readOnly: true, choices: pyramids }
+                        : { type: 'string', required: false, readOnly: true });
                     wqpEnsureOption(root.is, 'newFieldCount', { type: 'integer', required: false, readOnly: true });
                 }
                 if (root.regular && typeof root.regular === 'object') {
@@ -1118,7 +1164,9 @@ function injectFetchInterceptor(tabId) {
                     if (root.is && root.is[key] === undefined) root.is[key] = { type: 'string', required: false, readOnly: true };
                 }
                 const values = Array.isArray(root) ? root : Object.values(root);
-                values.forEach((value) => { if (value && typeof value === 'object') wqpInjectAlphaOptions(value, seen); });
+                for (const value of values) {
+                    if (value && typeof value === 'object') await wqpInjectAlphaOptions(value, seen);
+                }
                 return root;
             }
 
@@ -1181,7 +1229,7 @@ function injectFetchInterceptor(tabId) {
                 // "The filter failedNumPPA is invalid. Try a different syntax"
                 if (method === 'OPTIONS' && /\/users\/[^/]+\/alphas\/?$/.test(url.split('?')[0])) {
                     try {
-                        const schema = wqpInjectAlphaOptions(await response.clone().json());
+                        const schema = await wqpInjectAlphaOptions(await response.clone().json());
                         return new Response(JSON.stringify(schema), {
                             status: response.status,
                             statusText: response.statusText,

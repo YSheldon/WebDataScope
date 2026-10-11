@@ -175,7 +175,7 @@ console.log('\n[5] 自绘 Pyramid 下拉 UI: 按钮/勾选/写回 ␟ 拼接');
     });
     class FakeEvent { constructor(type, opts) { this.type = type; this.bubbles = !!(opts && opts.bubbles); } }
 
-    const headCells = [makeCell2('ID'), makeCell2('Pyramid')];
+    const headCells = [makeCell2('ID'), makeCell2('Pyramid ▲▼')]; // 真实表头带排序箭头
     const head = { querySelectorAll: (s) => (s === '.rt-th' ? headCells : []) };
     const filterInput = makeInput('');
     const pyrCell = makeCell2('');

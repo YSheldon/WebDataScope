@@ -1395,7 +1395,7 @@ function injectFetchInterceptor(tabId) {
                 nativeInputValue(input, [...selected].join('\u001f'));
             }
             function locateFilterCell(headers, filterTheads, title) {
-                const colIndex = headers.findIndex((th) => (th.textContent || '').trim() === title);
+                const colIndex = headers.findIndex((th) => (th.textContent || '').trim().startsWith(title));
                 if (colIndex < 0) return null;
                 for (const thead of filterTheads) {
                     const cells = [...thead.querySelectorAll('.rt-th')];
@@ -1405,6 +1405,7 @@ function injectFetchInterceptor(tabId) {
             }
             let pyramidUiTimer = null;
             let pyramidPanel = null;
+            let pyramidUiReady = false;
             function schedulePyramidFilter(delay) {
                 if (pyramidUiTimer) return;
                 pyramidUiTimer = setTimeout(() => { pyramidUiTimer = null; try { ensurePyramidFilterUi(); } catch (_) {} }, delay || 250);
@@ -1415,11 +1416,15 @@ function injectFetchInterceptor(tabId) {
                 const headTheads = [...document.querySelectorAll('.rt-thead.-header')];
                 const filterTheads = [...document.querySelectorAll('.rt-thead.-filters')];
                 const fallback = filterTheads.length ? [] : [...document.querySelectorAll('.rt-thead')].filter((h) => h.querySelector('input'));
+                let ready = false;
                 for (const head of headTheads) {
                     const headers = [...head.querySelectorAll('.rt-th')];
-                    if (!headers.some((th) => (th.textContent || '').trim() === 'Pyramid')) continue;
+                    // 表头带排序箭头(如 'Pyramid ▲'), 用 startsWith 而不是全等
+                    if (!headers.some((th) => (th.textContent || '').trim().startsWith('Pyramid'))) continue;
                     const cell = locateFilterCell(headers, filterTheads.length ? filterTheads : fallback, 'Pyramid');
-                    if (!cell || cell.querySelector('.wqp-pyramid-filter-btn')) continue;
+                    if (!cell) continue;
+                    const existing = cell.querySelector('.wqp-pyramid-filter-btn');
+                    if (existing) { ready = true; continue; }
                     const input = cell.querySelector('input');
                     if (!input) continue;
                     const btn = document.createElement('button');
@@ -1434,7 +1439,11 @@ function injectFetchInterceptor(tabId) {
                         togglePyramidPanel(btn, input);
                     });
                     cell.appendChild(btn);
+                    ready = true;
                 }
+                // 表格/筛选行还没渲染好时, observer 不会再 fire —— 1s 后自愈重试
+                if (!ready && !pyramidUiReady) setTimeout(() => schedulePyramidFilter(), 1000);
+                else if (ready) pyramidUiReady = true;
             }
             function closePyramidPanel() {
                 if (pyramidPanel) { pyramidPanel.remove(); pyramidPanel = null; }

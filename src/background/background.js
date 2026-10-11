@@ -1190,6 +1190,7 @@ function injectFetchInterceptor(tabId) {
                 // 上色请求当场记下(平台把颜色 PUT/PATCH 到 /users/self/alphas/{id})
                 try { wqpCaptureColorMutation(method, url, args[1]?.body); } catch (_) {}
                 if (clientQuery?.active) {
+                    console.log('[WQP] 客户端过滤:', url, JSON.stringify(clientQuery.clientFilters));
                     try {
                         const rows = wqpConstrain(await loadAlphasForClientQuery(clientQuery.serverUrl), url);
                         // 颜色本地记忆: 池行的 color 是建池那一刻的旧值, 用本地记录覆盖

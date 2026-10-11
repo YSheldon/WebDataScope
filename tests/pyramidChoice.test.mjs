@@ -87,12 +87,16 @@ console.log('\n[2] OPTIONS 注入: 有池数据 → choice, 空池 → 回退 st
     const schema = await api.wqpInjectAlphaOptions({ is: {}, regular: {} });
     check('is.WQPPYS 注入为 choice', schema.is.children.WQPPYS.type === 'choice', JSON.stringify(schema.is.children.WQPPYS));
     check('choices 与池段值一致', JSON.stringify(schema.is.children.WQPPYS.choices.map((c) => c.value)) === '["fundamental","model","pv"]');
+    check('顶层挂了 WQPPYS choice(平台筛下拉只扫顶层+settings.children)',
+        schema.WQPPYS?.type === 'choice' && JSON.stringify(schema.WQPPYS.choices.map((c) => c.value)) === '["fundamental","model","pv"]',
+        JSON.stringify(schema.WQPPYS));
     check('is.failedNumRA 照旧注入 integer', schema.is.children.failedNumRA.type === 'integer');
     check('regular.operatorCount 照旧注入', schema.regular.children.operatorCount.type === 'integer');
 
     const empty = makeApi([]);
     const schema2 = await empty.wqpInjectAlphaOptions({ is: {}, regular: {} });
     check('空池回退 string(原文本框)', schema2.is.children.WQPPYS.type === 'string', JSON.stringify(schema2.is.children.WQPPYS));
+    check('空池不挂顶层 WQPPYS', schema2.WQPPYS === undefined);
 }
 
 console.log('\n[3] 比较语义: Pyramid 按段命中, 多选 ␟');

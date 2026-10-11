@@ -1150,11 +1150,17 @@ function injectFetchInterceptor(tabId) {
                 if (root.is && typeof root.is === 'object') {
                     wqpEnsureOption(root.is, 'failedNumRA', { type: 'integer', required: false, readOnly: true });
                     wqpEnsureOption(root.is, 'failedNumPPA', { type: 'integer', required: false, readOnly: true });
-                    // type:'choice' + choices 会让平台把筛选行渲染成 Region 同款的下拉勾选
+                    // type:'choice' + choices 会让平台把筛选行渲染成 Region 同款的下拉勾选。
+                    // 但平台的筛选下拉只扫「顶层 choice 字段 + settings.children」,
+                    // is.children 下的 choice 不进列表(实测 bundle 的 B 函数) —— 所以除了
+                    // 挂到 is.children 之外, 还要在 is 的旁边挂一个顶层 WQPPYS。
                     const pyramids = await wqpPyramidChoices();
                     wqpEnsureOption(root.is, 'WQPPYS', pyramids.length
                         ? { type: 'choice', required: false, readOnly: true, choices: pyramids }
                         : { type: 'string', required: false, readOnly: true });
+                    if (pyramids.length && !Array.isArray(root) && root.WQPPYS === undefined) {
+                        root.WQPPYS = { type: 'choice', required: false, readOnly: true, choices: pyramids };
+                    }
                     wqpEnsureOption(root.is, 'newFieldCount', { type: 'integer', required: false, readOnly: true });
                 }
                 if (root.regular && typeof root.regular === 'object') {
